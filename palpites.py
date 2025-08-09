@@ -462,7 +462,6 @@ def historico_palpites():
         st.error(f"Erro inesperado em historico_palpites: {e}")
     finally:
         db.close()
-
 def validar_palpite():
     if "usuario" not in st.session_state or not st.session_state.usuario:
         st.warning("Você precisa estar logado para validar seus Palpites.")

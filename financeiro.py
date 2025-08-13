@@ -26,7 +26,7 @@ def exibir_aba_financeiro():
         # 2. Detalhes do plano atual
         plano_atual = planos.get(plano_id, {"nome": "Desconhecido", "valor": 0, "palpites": 0, "loteria": "Desconhecido"})
 
-        st.subheader("💰 Informações Financeiras")
+        st.subheader("Informações Financeiras")
 
         st.markdown(f"""
         <div style="background-color:#f3f3f3; padding: 20px; border-radius: 12px; border: 1px solid #ccc">
@@ -47,7 +47,7 @@ def exibir_aba_financeiro():
         """), {"uid": user_id}).fetchall()
 
         if pagamentos:
-            st.markdown("### 📄 Últimos Pagamentos")
+            st.markdown("### Seus Pagamentos")
             for data_pgto, forma, valor, validade, plano_pgto_id in pagamentos:
                 nome_plano = planos.get(plano_pgto_id, {}).get("nome", "Desconhecido")
                 st.write(f"- [{data_pgto}] {nome_plano} - R$ {valor:.2f} via {forma} | válido até {validade}")

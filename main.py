@@ -1,4 +1,4 @@
-# main v8.0
+# main v8.01
 # -------------------- [1] IMPORTS --------------------
 
 import os
@@ -515,7 +515,6 @@ if 'admin' not in st.session_state:
         logout() # Deve limpar a sessão e fazer st.rerun()
 
     # Rodapé da sidebar
-    st.sidebar.markdown("<div style='text-align:center; color:green; font-size:16px; margin-top: auto;'>FaixaBet v8.001</div>", unsafe_allow_html=True)
  else:
     # Opcional: Mensagem se, por algum motivo, este código rodar sem o usuário estar logado
     st.warning("Você precisa estar logado para acessar o menu.")
@@ -526,4 +525,4 @@ if 'admin' not in st.session_state:
 # --- FIM DO BLOCO DE LOGIN / CADASTRO ---
 
 
-st.sidebar.markdown("<div style='text-align:left; color:green; font-size:16px;'>FaixaBet v8.001</div>", unsafe_allow_html=True)
+st.sidebar.markdown("<div style='text-align:left; color:green; font-size:16px;'>FaixaBet v8.01</div>", unsafe_allow_html=True)

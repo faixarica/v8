@@ -268,7 +268,6 @@ def calcular_palpites_periodo(id_usuario):
         db.close()
 
 # -------------------- [4] APLICAÇÃO STREAMLIT --------------------
-
 # LOGIN / CADASTRO 1
 if not st.session_state.get("logged_in", False):
     st.markdown("## Acesso ao Sistema")
@@ -454,7 +453,6 @@ if not st.session_state.get("logged_in", False):
                 finally:
                     db.close()
 
-
 if 'admin' not in st.session_state:
 # Inicializa variáveis no session_state para evitar erros de atributo inexistente
 
@@ -518,6 +516,15 @@ if 'admin' not in st.session_state:
     st.warning("Você precisa estar logado para acessar o menu.")
     # Mova esta função inteira para antes da linha 339 (if opcao_selecionada == "Dashboard":)
    
+import streamlit as st
+
+def logout():
+    # Limpa o estado da sessão
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
+    st.success("Você saiu com sucesso!")
+    st.experimental_rerun()
+
 # --- FIM DO BLOCO DE LOGIN / CADASTRO ---
 
 st.sidebar.markdown("<div style='text-align:left; color:green; font-size:16px;'>FaixaBet v8.01</div>", unsafe_allow_html=True)

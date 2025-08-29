@@ -150,38 +150,70 @@ def gerar_palpite_estatistico(limite=15):
 
 # 3. Utilitários para LSTM
 @st.cache_resource
-def carregar_modelo_ls15(path="modelo_ls15.h5"):
+def carregar_modelo_ls15(path="modelo_ls15pp.h5"):
     try:
         return load_model(path)
     except Exception as e:
-        st.error(f"Erro ao carregar modelo LS15: {e}")
+        st.error(f"Erro ao carregar modelo LS15++: {e}")
         return None
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 @st.cache_resource
-def carregar_modelo_ls14(path=os.path.join(BASE_DIR, "modelo_ls14.h5")):
+def carregar_modelo_ls14(path=os.path.join(BASE_DIR, "modelo_ls14pp.h5")):
     try:
         # carregar apenas para inferência (não compilar -> evita necessidade de custom loss)
         return load_model(path, compile=False)
     except Exception as e:
-        st.error(f"Erro ao carregar modelo LS14: {e}")
+        st.error(f"Erro ao carregar modelo LS14++: {e}")
         return None
 
 @st.cache_resource
-def carregar_modelo_ls15(path=os.path.join(BASE_DIR, "modelo_ls15.h5")):
+def carregar_modelo_ls15(path=os.path.join(BASE_DIR, "modelo_ls15pp.h5")):
     try:
         return load_model(path, compile=False)
     except Exception as e:
-        st.error(f"Erro ao carregar modelo LS15: {e}")
+        st.error(f"Erro ao carregar modelo LS15++: {e}")
         return None
+
+def _calc_features_from_window(ultimos):  # ultimos = lista de jogos (cada um com 15 dezenas)
+    # binários por concurso
+    seq_bin = np.array([to_binary(j) for j in ultimos], dtype=np.float32)  # (window,25)
+    window = len(ultimos)
+
+    # frequência (proporção de aparecimentos na janela)
+    freq_vec = seq_bin.sum(axis=0) / float(window)
+
+    # atraso normalizado
+    atraso_vec = np.zeros(25, dtype=np.float32)
+    for d in range(1, 26):
+        atraso = 0
+        for jogo in reversed(ultimos):
+            atraso += 1
+            if d in jogo:
+                break
+        atraso_vec[d-1] = min(atraso, window) / float(window)
+
+    # global (use o último jogo como proxy)
+    last = ultimos[-1]
+    soma = sum(last) / (25.0 * 15.0)
+    pares = sum(1 for x in last if x % 2 == 0) / 15.0
+    global_vec = np.array([soma, pares], dtype=np.float32)
+
+    return seq_bin, freq_vec.astype(np.float32), atraso_vec.astype(np.float32), global_vec
 
 
 def to_binary(jogo):
     b = [0] * 25
     for n in jogo:
-        b[int(n) - 1] = 1
+        try:
+            idx = int(n) - 1
+        except Exception:
+            continue  # ignora lixo
+        if 0 <= idx < 25:
+            b[idx] = 1
+        # se quiser, logue os inválidos aqui
     return b
 
 # 4. LS15
@@ -202,23 +234,42 @@ def gerar_palpite_ls15(limite=15, window=50):
             raise ValueError("Histórico insuficiente para LS15.")
 
         ultimos = [list(map(int, r)) for r in reversed(resultados)]
-        entrada = np.array([[to_binary(j) for j in ultimos]], dtype=np.float32)
+        seq_bin, freq_vec, atraso_vec, global_vec = _calc_features_from_window(ultimos)
 
         modelo = carregar_modelo_ls15()
         if modelo is None:
             raise ValueError("Modelo LS15 não carregado.")
 
-        pred = modelo.predict(entrada, verbose=0)[0]
+        # Detecta quantas entradas o modelo espera
+        n_inputs = len(getattr(modelo, "inputs", [])) or 1
+
+        if n_inputs == 1:  # LS15 "simples"
+            pred = modelo.predict(seq_bin[None, ...], verbose=0)[0]
+        elif n_inputs == 4:  # LS15++
+            pred = modelo.predict(
+                [seq_bin[None, ...], freq_vec[None, :], atraso_vec[None, :], global_vec[None, :]],
+                verbose=0
+            )[0]
+        else:
+            raise ValueError(f"LS15: modelo com {n_inputs} entradas não suportado.")
+
+        # safety: garantir vetor de 25
+        if len(pred) < 25:
+            buf = np.zeros(25, dtype=np.float32)
+            buf[:len(pred)] = pred
+            pred = buf
+
         chosen = np.argsort(pred)[-limite:] + 1
         return sorted(chosen.tolist())
+
     finally:
         db.close()
+
 
 # 5. LS14 híbrido
 def gerar_palpite_ls14(limite=15, window=50):
     db = Session()
     try:
-        # Pegamos window+1 concursos: window para a sequência, +1 alvo (target)
         resultados = db.execute(
             text("""
                 SELECT concurso, n1,n2,n3,n4,n5,n6,n7,n8,n9,n10,
@@ -227,43 +278,46 @@ def gerar_palpite_ls14(limite=15, window=50):
                 ORDER BY concurso DESC
                 LIMIT :lim
             """),
-            {"lim": window + 1}
+            {"lim": window}
         ).fetchall()
 
-        if len(resultados) < window + 1:
-            raise ValueError("Histórico insuficiente para LS14 (precisa de window+1 resultados).")
-
-        # repete map
-        repete_rows = db.execute(text("SELECT concurso_atual, qtd_repetidos FROM repete")).fetchall()
-        repete_map = {int(r[0]): int(r[1]) for r in repete_rows}
+        if len(resultados) < window:
+            raise ValueError("Histórico insuficiente para LS14.")
 
         # ordem cronológica
         resultados = list(reversed(resultados))
+        ultimos = [list(map(int, r[1:])) for r in resultados]  # só as dezenas
+        seq_bin, freq_vec, atraso_vec, global_vec = _calc_features_from_window(ultimos)
 
-        # sequência (sem o target) e target
-        sequencia = resultados[:-1]   # lista de length == window
-        target = resultados[-1]
-
-        # montar entradas no mesmo formato do treino: (1, window, 25) e (1,1)
-        seq_input = np.array(
-            [[ to_binary([int(x) for x in row[1:]]) for row in sequencia ]],
-            dtype=np.float32
-        )
-
-        concurso_target = int(target[0])
-        repeticoes = repete_map.get(concurso_target, 0) / 15.0
-        hist_input = np.array([[repeticoes]], dtype=np.float32)
+        # estimativa de 'hist_input' (repetições) para o PRÓXIMO sorteio
+        # usa interseção entre os dois últimos como proxy [0..1]
+        if len(ultimos) >= 2:
+            rep_est = len(set(ultimos[-1]).intersection(set(ultimos[-2]))) / 15.0
+        else:
+            rep_est = 0.6  # fallback neutro
+        hist_input = np.array([[rep_est]], dtype=np.float32)
 
         modelo = carregar_modelo_ls14()
         if modelo is None:
             raise ValueError("Modelo LS14 não carregado.")
 
-        # checagem de segurança: modelo deve ter 2 entradas
-        if hasattr(modelo, "inputs") and len(modelo.inputs) != 2:
-            raise ValueError(f"Modelo carregado tem {len(modelo.inputs)} entrada(s). Esperado 2 (seq_input, hist_input). "
-                             "Provavelmente o modelo salvo não é o LS14 híbrido. Re-treine com o script atualizado.")
+        n_inputs = len(getattr(modelo, "inputs", [])) or 2
 
-        pred = modelo.predict([seq_input, hist_input], verbose=0)[0]
+        if n_inputs == 2:  # LS14 híbrido (seq + hist)
+            pred = modelo.predict([seq_bin[None, ...], hist_input], verbose=0)[0]
+        elif n_inputs == 5:  # LS14++ (seq + hist + freq + atraso + global)
+            pred = modelo.predict(
+                [seq_bin[None, ...], hist_input, freq_vec[None, :], atraso_vec[None, :], global_vec[None, :]],
+                verbose=0
+            )[0]
+        else:
+            raise ValueError(f"LS14: modelo com {n_inputs} entradas não suportado.")
+
+        if len(pred) < 25:
+            buf = np.zeros(25, dtype=np.float32)
+            buf[:len(pred)] = pred
+            pred = buf
+
         chosen = np.argsort(pred)[-limite:] + 1
         return sorted(chosen.tolist())
 
@@ -305,6 +359,130 @@ def gerar_palpite_from_probs(probs, limite=15, reinforce_threshold=0.06, boost_f
         return np.sort(chosen_idxs + 1).tolist()
 
 ## --------------------------------------------- CORE -----------------------------------------------------------
+    def gerar_palpite():
+        st.title("Gerar Palpites")
+
+        # Mostrar o plano atual do usuário
+        if "usuario" in st.session_state and st.session_state.usuario:
+            nome_plano = st.session_state.usuario.get("plano", "Desconhecido")
+            st.markdown(f"""
+                <div style='font-family: "Poppins", sans-serif; font-size:16px; color:#0b450b; margin-bottom: 20px;'>
+                    Plano atual: <strong>{nome_plano}</strong>
+                </div>
+            """, unsafe_allow_html=True)
+
+        if 'usuario' not in st.session_state or st.session_state.usuario is None:
+            st.error("Você precisa estar logado para gerar palpites.")
+            return
+
+        id_usuario = st.session_state.usuario["id"]
+
+        try:
+            permitido, nome_plano, palpites_restantes = verificar_limite_palpites(id_usuario)
+            if not permitido:
+                if nome_plano in ["Plano não encontrado", "Erro DB", "Erro"]:
+                    st.error(f"Erro ao verificar seu plano: {nome_plano}")
+                else:
+                    st.error(f"Você atingiu o Limite de Palpites do Plano {nome_plano} para este mês.")
+                return
+
+            limite_dezenas = obter_limite_dezenas_por_plano(nome_plano)
+
+            # Modelos disponíveis
+            modelos_disponiveis = ["Aleatório", "Estatístico", "Pares/Ímpares"]
+            if nome_plano in ["Silver", "Gold", "Plano Pago X"]:
+                modelos_disponiveis += ["LS15", "LS14"]
+
+            modelo = st.selectbox("Modelo de Geração:", modelos_disponiveis)
+
+            num_palpites = st.number_input(
+                "Quantos Palpites Deseja Gerar?",
+                min_value=1,
+                max_value=max(1, palpites_restantes),
+                value=1,
+                step=1
+            )
+
+            # Limites de dezenas por plano
+            min_dezenas = 15
+            max_dezenas = 15  # padrão para Free
+            if nome_plano == "Silver":
+                max_dezenas = 17
+            elif nome_plano == "Gold":
+                max_dezenas = 20
+
+            qtde_dezenas = st.number_input(
+                "Quantas dezenas por palpite?",
+                min_value=min_dezenas,
+                max_value=max_dezenas,
+                value=min_dezenas,
+                step=1
+            )
+
+            if st.button("Gerar Palpites"):
+                palpites_gerados = []
+
+                try:
+                    for _ in range(num_palpites):
+                        try:
+                            if modelo == "Aleatório":
+                                palpite = gerar_palpite_aleatorio(limite=qtde_dezenas)
+                            elif modelo == "Estatístico":
+                                palpite = gerar_palpite_estatistico(limite=qtde_dezenas)
+                            elif modelo == "Pares/Ímpares":
+                                palpite = gerar_palpite_pares_impares(limite=qtde_dezenas)
+                            elif modelo == "LS15":
+                                palpite = gerar_palpite_ls15(limite=qtde_dezenas)
+                            elif modelo == "LS14":
+                                palpite = gerar_palpite_ls14(limite=qtde_dezenas)
+                            else:
+                                st.warning("Modelo inválido.")
+                                continue
+
+                            if palpite:
+                                salvar_palpite(palpite, modelo)
+                                atualizar_contador_palpites(id_usuario)
+                                palpites_gerados.append(palpite)
+
+                        except ValueError as e:
+                            st.error(f"Erro ao gerar palpite: {e}")
+                        except Exception as e:
+                            st.error(f"Erro inesperado ao gerar palpite: {e}")
+
+                    if palpites_gerados:
+                        st.success(f"{len(palpites_gerados)} Palpite(s) Gerado(s) com Sucesso:")
+
+                        for i in range(0, len(palpites_gerados), 2):
+                            cols = st.columns(2)
+                            for j in range(2):
+                                if i + j < len(palpites_gerados):
+                                    palpite = palpites_gerados[i + j]
+                                    numeros_str = ', '.join(map(str, palpite)) if isinstance(palpite, list) else str(palpite)
+
+                                    with cols[j]:
+                                        st.markdown(f"""
+                                            <div style='background:#fdfdfd; padding:10px 12px; border-radius:8px; border:1px solid #ccc; margin-bottom:12px'>
+                                                <div style='font-size:13px; color:#1f77b4; font-weight:bold;'>Novo Palpite Gerado</div>
+                                                <div style='font-size:11px; color:gray;'>{modelo} | {datetime.now().strftime('%d/%m/%Y %H:%M')}</div>
+                                                <div style='font-family: monospace; font-size:14px; margin-top:6px;'>{numeros_str}</div>
+                                                <button onclick="navigator.clipboard.writeText('{numeros_str}')" 
+                                                        style="margin-top:8px; padding:4px 8px; font-size:11px; border:none; background-color:#1f77b4; color:white; border-radius:5px; cursor:pointer;">
+                                                    Copiar
+                                                </button>
+                                            </div>
+                                        """, unsafe_allow_html=True)
+
+                        with st.expander("ℹ️ Aviso Sobre Cópia"):
+                            st.markdown("Em alguns navegadores o botão de cópia pode não funcionar. Use o modo tradicional.")
+                    else:
+                        st.warning("Nenhum palpite foi gerado.")
+                except Exception as e:
+                    st.error(f"Erro crítico ao iniciar a geração de palpites: {str(e)}")
+
+        except Exception as e:
+            st.error(f"Erro geral ao preparar o gerador de palpites: {e}")
+
+## ------------------------------------------FIM CORE --------------------------------------------------------
 def gerar_palpite():
     st.title("Gerar Palpites")
 
@@ -333,7 +511,20 @@ def gerar_palpite():
             return
 
         limite_dezenas = obter_limite_dezenas_por_plano(nome_plano)
+        # Dropdown de loterias permitido pelo plano
+        loterias_disponiveis = ["Lotofácil", "LotoMania", "Quina", "Sena", "MegaSena"]
+        # Deixar habilitado apenas Lotofácil
+        loteria_selecionada = st.selectbox(
+            "Escolha a Loteria:",
+            loterias_disponiveis,
+            index=0,  # seleciona Lotofácil por padrão
+            format_func=lambda x: x if x == "Lotofácil" else f"{x} (indisponível)",
+        )
 
+        # Bloquear seleção das indisponíveis
+        if loteria_selecionada != "Lotofácil":
+            st.warning("Somente Lotofácil está disponível para este plano.")
+            return
         # Modelos disponíveis
         modelos_disponiveis = ["Aleatório", "Estatístico", "Pares/Ímpares"]
         if nome_plano in ["Silver", "Gold", "Plano Pago X"]:
@@ -427,7 +618,6 @@ def gerar_palpite():
 
     except Exception as e:
         st.error(f"Erro geral ao preparar o gerador de palpites: {e}")
-## ------------------------------------------FIM CORE --------------------------------------------------------
 
 def historico_palpites():
     if "usuario" not in st.session_state or not st.session_state.usuario:

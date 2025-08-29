@@ -10,7 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from db import Session
 from dashboard import mostrar_dashboard
 from palpites import gerar_palpite, historico_palpites, validar_palpite
-from auth import logout
+# from auth import logout
 from perfil import editar_perfil
 from financeiro import exibir_aba_financeiro
 import requests
@@ -241,7 +241,6 @@ def criar_usuario(nome, email, telefone, data_nascimento, usuario, senha, tipo, 
     finally:
         db.close()
 
-
 def calcular_palpites_periodo(id_usuario):
     db = Session()
     try:
@@ -455,7 +454,6 @@ if not st.session_state.get("logged_in", False):
                 finally:
                     db.close()
 
-    
 
 if 'admin' not in st.session_state:
 # Inicializa variáveis no session_state para evitar erros de atributo inexistente
@@ -519,10 +517,7 @@ if 'admin' not in st.session_state:
     # Opcional: Mensagem se, por algum motivo, este código rodar sem o usuário estar logado
     st.warning("Você precisa estar logado para acessar o menu.")
     # Mova esta função inteira para antes da linha 339 (if opcao_selecionada == "Dashboard":)
-
-
-    
+   
 # --- FIM DO BLOCO DE LOGIN / CADASTRO ---
-
 
 st.sidebar.markdown("<div style='text-align:left; color:green; font-size:16px;'>FaixaBet v8.01</div>", unsafe_allow_html=True)

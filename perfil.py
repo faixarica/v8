@@ -7,7 +7,7 @@ from passlib.hash import pbkdf2_sha256
 from sqlalchemy import text
 
 from db import Session  # ou ajuste conforme seu nome de conexão
-from database import carregar_planos
+#from database import carregar_planos
 
 # -------------------- [2] CONFIGS --------------------
 

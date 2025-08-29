@@ -11,3 +11,5 @@ requests==2.31.0
 psycopg2-binary==2.9.9
 stripe==8.5.0
 seaborn==0.13.2
+pyperclip
+                                                      

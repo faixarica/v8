@@ -161,7 +161,7 @@ def carregar_modelo_ls15(path="modelo_ls15pp.h5"):
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 @st.cache_resource
-def carregar_modelo_ls14(path=os.path.join(BASE_DIR, "modelo_ls14pp.h5")):
+def carregar_modelo_ls14(path=os.path.join(BASE_DIR, "modelo_ls14pp.keras")):
     try:
         # carregar apenas para inferência (não compilar -> evita necessidade de custom loss)
         return load_model(path, compile=False)
@@ -170,7 +170,7 @@ def carregar_modelo_ls14(path=os.path.join(BASE_DIR, "modelo_ls14pp.h5")):
         return None
 
 @st.cache_resource
-def carregar_modelo_ls15(path=os.path.join(BASE_DIR, "modelo_ls15pp.h5")):
+def carregar_modelo_ls15(path=os.path.join(BASE_DIR, "modelo_ls15pp.keras")):
     try:
         return load_model(path, compile=False)
     except Exception as e:
@@ -359,17 +359,23 @@ def gerar_palpite_from_probs(probs, limite=15, reinforce_threshold=0.06, boost_f
         return np.sort(chosen_idxs + 1).tolist()
 
 ## --------------------------------------------- CORE -----------------------------------------------------------
-    def gerar_palpite():
-        st.title("Gerar Palpites")
-
-        # Mostrar o plano atual do usuário
-        if "usuario" in st.session_state and st.session_state.usuario:
-            nome_plano = st.session_state.usuario.get("plano", "Desconhecido")
-            st.markdown(f"""
-                <div style='font-family: "Poppins", sans-serif; font-size:16px; color:#0b450b; margin-bottom: 20px;'>
-                    Plano atual: <strong>{nome_plano}</strong>
-                </div>
-            """, unsafe_allow_html=True)
+def gerar_palpite():
+    st.title("Gerar Bets")
+    db = Session()
+    try:
+        id_plano = st.session_state.usuario.get("id_plano", 0)
+        result = db.execute(text("SELECT nome FROM planos WHERE id = :id_plano"), {"id_plano": id_plano})
+        row = result.fetchone()
+        nome_plano = row[0] if row else "Desconhecido"
+    finally:
+        db.close()
+    # Mostrar o plano atual do usuário
+    if "usuario" in st.session_state and st.session_state.usuario:
+        st.markdown(f"""
+        <div style='font-family: "Poppins", sans-serif; font-size:16px; color:#0b450b; margin-bottom: 20px;'>
+            Plano atual: <strong>{nome_plano}</strong>
+        </div>
+    """, unsafe_allow_html=True)
 
         if 'usuario' not in st.session_state or st.session_state.usuario is None:
             st.error("Você precisa estar logado para gerar palpites.")
@@ -486,58 +492,58 @@ def gerar_palpite_from_probs(probs, limite=15, reinforce_threshold=0.06, boost_f
 def gerar_palpite():
     st.title("Gerar Palpites")
 
-    # Mostrar o plano atual do usuário
-    if "usuario" in st.session_state and st.session_state.usuario:
-        nome_plano = st.session_state.usuario.get("plano", "Desconhecido")
-        st.markdown(f"""
-            <div style='font-family: "Poppins", sans-serif; font-size:16px; color:#0b450b; margin-bottom: 20px;'>
-                Plano atual: <strong>{nome_plano}</strong>
-            </div>
-        """, unsafe_allow_html=True)
-
+    # Verificar se usuário está logado
     if 'usuario' not in st.session_state or st.session_state.usuario is None:
         st.error("Você precisa estar logado para gerar palpites.")
         return
 
     id_usuario = st.session_state.usuario["id"]
+    id_plano = st.session_state.usuario.get("id_plano", 0)
+
+    # Recuperar nome do plano do banco
+    db = Session()
+    try:
+        result = db.execute(text("SELECT nome FROM planos WHERE id = :id_plano"), {"id_plano": id_plano})
+        row = result.fetchone()
+        nome_plano = row[0] if row else "Desconhecido"
+    except Exception as e:
+        st.error(f"Erro ao obter nome do plano: {e}")
+        nome_plano = "Desconhecido"
+    finally:
+        db.close()
+
+    # Mostrar o plano atual do usuário
+    st.markdown(f"""
+        <div style='font-family: "Poppins", sans-serif; font-size:16px; color:#0b450b; margin-bottom: 20px;'>
+            Plano atual: <strong>{nome_plano}</strong>
+        </div>
+    """, unsafe_allow_html=True)
 
     try:
-        permitido, nome_plano, palpites_restantes = verificar_limite_palpites(id_usuario)
+        permitido, nome_plano_verif, palpites_restantes = verificar_limite_palpites(id_usuario)
         if not permitido:
-            if nome_plano in ["Plano não encontrado", "Erro DB", "Erro"]:
-                st.error(f"Erro ao verificar seu plano: {nome_plano}")
+            if nome_plano_verif in ["Plano não encontrado", "Erro DB", "Erro"]:
+                st.error(f"Erro ao verificar seu plano: {nome_plano_verif}")
             else:
-                st.error(f"Você atingiu o Limite de Palpites do Plano {nome_plano} para este mês.")
+                st.error(f"Você atingiu o limite de palpites do Plano {nome_plano_verif} para este mês.")
             return
 
         limite_dezenas = obter_limite_dezenas_por_plano(nome_plano)
-        # Dropdown de loterias permitido pelo plano
-        loterias_disponiveis = ["Lotofácil", "LotoMania", "Quina", "Sena", "MegaSena"]
-        # Deixar habilitado apenas Lotofácil
-        loteria_selecionada = st.selectbox(
-            "Escolha a Loteria:",
-            loterias_disponiveis,
-            index=0,  # seleciona Lotofácil por padrão
-            format_func=lambda x: x if x == "Lotofácil" else f"{x} (indisponível)",
-        )
 
-        # Bloquear seleção das indisponíveis
-        if loteria_selecionada != "Lotofácil":
-            st.warning("Somente Lotofácil está disponível para este plano.")
-            return
         # Modelos disponíveis
         modelos_disponiveis = ["Aleatório", "Estatístico", "Pares/Ímpares"]
         if nome_plano in ["Silver", "Gold", "Plano Pago X"]:
             modelos_disponiveis += ["LS15", "LS14"]
 
-        modelo = st.selectbox("Modelo de Geração:", modelos_disponiveis)
+        modelo = st.selectbox("Modelo de Geração:", modelos_disponiveis, key="select_modelo")
 
         num_palpites = st.number_input(
             "Quantos Palpites Deseja Gerar?",
             min_value=1,
             max_value=max(1, palpites_restantes),
             value=1,
-            step=1
+            step=1,
+            key="num_palpites"
         )
 
         # Limites de dezenas por plano
@@ -553,68 +559,66 @@ def gerar_palpite():
             min_value=min_dezenas,
             max_value=max_dezenas,
             value=min_dezenas,
-            step=1
+            step=1,
+            key="qtde_dezenas"
         )
 
-        if st.button("Gerar Palpites"):
+        if st.button("Gerar Palpites", key="btn_gerar_palpites"):
             palpites_gerados = []
 
-            try:
-                for _ in range(num_palpites):
-                    try:
-                        if modelo == "Aleatório":
-                            palpite = gerar_palpite_aleatorio(limite=qtde_dezenas)
-                        elif modelo == "Estatístico":
-                            palpite = gerar_palpite_estatistico(limite=qtde_dezenas)
-                        elif modelo == "Pares/Ímpares":
-                            palpite = gerar_palpite_pares_impares(limite=qtde_dezenas)
-                        elif modelo == "LS15":
-                            palpite = gerar_palpite_ls15(limite=qtde_dezenas)
-                        elif modelo == "LS14":
-                            palpite = gerar_palpite_ls14(limite=qtde_dezenas)
-                        else:
-                            st.warning("Modelo inválido.")
-                            continue
+            for _ in range(num_palpites):
+                try:
+                    if modelo == "Aleatório":
+                        palpite = gerar_palpite_aleatorio(limite=qtde_dezenas)
+                    elif modelo == "Estatístico":
+                        palpite = gerar_palpite_estatistico(limite=qtde_dezenas)
+                    elif modelo == "Pares/Ímpares":
+                        palpite = gerar_palpite_pares_impares(limite=qtde_dezenas)
+                    elif modelo == "LS15":
+                        palpite = gerar_palpite_ls15(limite=qtde_dezenas)
+                    elif modelo == "LS14":
+                        palpite = gerar_palpite_ls14(limite=qtde_dezenas)
+                    else:
+                        st.warning("Modelo inválido.")
+                        continue
 
-                        if palpite:
-                            salvar_palpite(palpite, modelo)
-                            atualizar_contador_palpites(id_usuario)
-                            palpites_gerados.append(palpite)
+                    if palpite:
+                        salvar_palpite(palpite, modelo)
+                        atualizar_contador_palpites(id_usuario)
+                        palpites_gerados.append(palpite)
 
-                    except ValueError as e:
-                        st.error(f"Erro ao gerar palpite: {e}")
-                    except Exception as e:
-                        st.error(f"Erro inesperado ao gerar palpite: {e}")
+                except ValueError as e:
+                    st.error(f"Erro ao gerar palpite: {e}")
+                except Exception as e:
+                    st.error(f"Erro inesperado ao gerar palpite: {e}")
 
-                if palpites_gerados:
-                    st.success(f"{len(palpites_gerados)} Palpite(s) Gerado(s) com Sucesso:")
+            if palpites_gerados:
+                st.success(f"{len(palpites_gerados)} Palpite(s) Gerado(s) com Sucesso:")
 
-                    for i in range(0, len(palpites_gerados), 2):
-                        cols = st.columns(2)
-                        for j in range(2):
-                            if i + j < len(palpites_gerados):
-                                palpite = palpites_gerados[i + j]
-                                numeros_str = ', '.join(map(str, palpite)) if isinstance(palpite, list) else str(palpite)
+                for i in range(0, len(palpites_gerados), 2):
+                    cols = st.columns(2)
+                    for j in range(2):
+                        if i + j < len(palpites_gerados):
+                            palpite = palpites_gerados[i + j]
+                            numeros_str = ', '.join(map(str, palpite)) if isinstance(palpite, list) else str(palpite)
 
-                                with cols[j]:
-                                    st.markdown(f"""
-                                        <div style='background:#fdfdfd; padding:10px 12px; border-radius:8px; border:1px solid #ccc; margin-bottom:12px'>
-                                            <div style='font-size:13px; color:#1f77b4; font-weight:bold;'>Novo Palpite Gerado</div>
-                                            <div style='font-size:11px; color:gray;'>{modelo} | {datetime.now().strftime('%d/%m/%Y %H:%M')}</div>
-                                            <div style='font-family: monospace; font-size:14px; margin-top:6px;'>{numeros_str}</div>
-                                            <button onclick="navigator.clipboard.writeText('{numeros_str}')" 
-                                                    style="margin-top:8px; padding:4px 8px; font-size:11px; border:none; background-color:#1f77b4; color:white; border-radius:5px; cursor:pointer;">
-                                                Copiar
-                                            </button>
-                                        </div>
-                                    """, unsafe_allow_html=True)
+                            with cols[j]:
+                                st.markdown(f"""
+                                    <div style='background:#fdfdfd; padding:10px 12px; border-radius:8px; border:1px solid #ccc; margin-bottom:12px'>
+                                        <div style='font-size:13px; color:#1f77b4; font-weight:bold;'>Novo Palpite Gerado</div>
+                                        <div style='font-size:11px; color:gray;'>{modelo} | {datetime.now().strftime('%d/%m/%Y %H:%M')}</div>
+                                        <div style='font-family: monospace; font-size:14px; margin-top:6px;'>{numeros_str}</div>
+                                        <button onclick="navigator.clipboard.writeText('{numeros_str}')" 
+                                                style="margin-top:8px; padding:4px 8px; font-size:11px; border:none; background-color:#1f77b4; color:white; border-radius:5px; cursor:pointer;">
+                                            Copiar
+                                        </button>
+                                    </div>
+                                """, unsafe_allow_html=True)
 
-                    with st.expander("ℹ️ Aviso Sobre Cópia"):
-                        st.markdown("Em alguns navegadores o botão de cópia pode não funcionar. Use o modo tradicional.")
-                else:
-                    st.warning("Nenhum palpite foi gerado.")
-            except Exception as e:
-                st.error(f"Erro crítico ao iniciar a geração de palpites: {str(e)}")
+                with st.expander("ℹ️ Aviso Sobre Cópia"):
+                    st.markdown("Em alguns navegadores o botão de cópia pode não funcionar. Use o modo tradicional.")
+            else:
+                st.warning("Nenhum palpite foi gerado.")
 
     except Exception as e:
         st.error(f"Erro geral ao preparar o gerador de palpites: {e}")

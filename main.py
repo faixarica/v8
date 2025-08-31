@@ -35,7 +35,7 @@ st.markdown("""
     '>Bem-vindo à fAIxaBet®
         <hr style="margin: 0; border: 0; border-top: 1px solid #DDD;">
         <div style='text-align:center; font-size:16px; color:black; margin-top:4px;'>
-             Aqui Não é Sorte   •      é  IA
+             Aqui Não é Sorte   •      é  AI
         </div>
     </div>
 """, unsafe_allow_html=True)
@@ -273,13 +273,6 @@ def calcular_palpites_periodo(id_usuario):
 # =========================================================
 # Função para gerar token de recuperação
 # =========================================================
-import secrets
-from datetime import datetime, timedelta
-import streamlit as st
-
-# =========================================================
-# Função para gerar token de recuperação
-# =========================================================
 def gerar_token_recuperacao(user_id, db):
     token = secrets.token_urlsafe(32)
     validade = datetime.utcnow() + timedelta(hours=1)
@@ -314,14 +307,14 @@ if not st.session_state.get("logged_in", False):
     st.write("")
 
     if aba == "Entrar":
-        usuario_input = st.text_input("Usuário", key="input_usuario")
-        senha_input = st.text_input("Senha", type="password", key="input_senha")
+        usuario_input = st.text_input("Usuário")
+        senha_input = st.text_input("Senha", type="password")
 
-        if st.button("Entrar", key="btn_entrar"):
+        if st.button("Entrar"):
             db = Session()
             sucesso_login = False
             try:
-                # Login admin hardcoded
+                # Login admin
                 if usuario_input == "ufaixa990" and senha_input == "ufaixa990!":
                     st.session_state.logged_in = True
                     st.session_state.usuario = {
@@ -391,10 +384,10 @@ if not st.session_state.get("logged_in", False):
         # =========================================================
         col1, col2 = st.columns([1, 1])
         with col1:
-            if st.button("Esqueceu a senha?", key="btn_esqueceu_senha"):
+            if st.button("Esqueceu a senha?"):
                 st.session_state.show_recover_modal = True
         with col2:
-            if st.button("Já tenho token", key="btn_tenho_token"):
+            if st.button("Já tenho token"):
                 st.session_state.show_reset_modal = True
 
         # =========================================================
@@ -406,7 +399,7 @@ if not st.session_state.get("logged_in", False):
                 email_rec = st.text_input("E-mail cadastrado", key="recover_email")
                 col_a, col_b = st.columns([1,1])
                 with col_a:
-                    if st.button("Enviar link", key="btn_enviar_recover"):
+                    if st.button("Enviar link"):
                         db = Session()
                         try:
                             result = db.execute(text("SELECT id FROM usuarios WHERE email = :email"),
@@ -425,7 +418,7 @@ if not st.session_state.get("logged_in", False):
                         finally:
                             db.close()
                 with col_b:
-                    if st.button("Cancelar", key="btn_cancel_recover"):
+                    if st.button("Cancelar"):
                         st.session_state.show_recover_modal = False
 
         # =========================================================
@@ -439,7 +432,7 @@ if not st.session_state.get("logged_in", False):
                 confirmar_senha = st.text_input("Confirmar nova senha", type="password", key="reset_confirm")
                 col_a, col_b = st.columns([1,1])
                 with col_a:
-                    if st.button("Redefinir", key="btn_redefinir_senha"):
+                    if st.button("Redefinir"):
                         if nova_senha != confirmar_senha:
                             st.error("As senhas não conferem.")
                         else:
@@ -470,9 +463,8 @@ if not st.session_state.get("logged_in", False):
                             finally:
                                 db.close()
                 with col_b:
-                    if st.button("Cancelar", key="btn_cancel_reset"):
+                    if st.button("Cancelar"):
                         st.session_state.show_reset_modal = False
-
     elif aba == "Cadastro":
         st.info("⚠️ Tela de cadastro ainda não implementada.")
         pass  # mantém seu código atual de cadastro

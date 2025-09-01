@@ -4,7 +4,7 @@
 import os
 import secrets
 import streamlit as st
-from datetime import datetime, timedelta
+from datetime import datetime, date, timedelta
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
@@ -465,19 +465,47 @@ if not st.session_state.get("logged_in", False):
                 with col_b:
                     if st.button("Cancelar"):
                         st.session_state.show_reset_modal = False
+
     elif aba == "Cadastro":
         st.info("⚠️ Tela de cadastro ainda não implementada.")
-        pass  # mantém seu código atual de cadastro
+        
+        hoje = date.today()
+        idade_minima = 18
+
+        # Define a data máxima permitida (para ter pelo menos 18 anos)
+        try:
+            data_maxima = date(hoje.year - idade_minima, hoje.month, hoje.day)
+        except ValueError:
+            # Corrige anos bissextos (ex: 29/02)
+            data_maxima = date(hoje.year - idade_minima, 2, 28)
+
+        # Campos de cadastro
         nome = st.text_input("Nome Completo*")
         email = st.text_input("Email*")
         telefone = st.text_input("Telefone")
-        data_nascimento = st.date_input("Data de Nascimento")
+        
+        # Data de nascimento com valor inicial igual ao máximo permitido
+        data_maxima = date(hoje.year - idade_minima, hoje.month, hoje.day)
+        data_minima = date(1900, 1, 1)  # Permite escolher desde 1900
+
+        data_nascimento = st.date_input(
+            "Data de Nascimento*",
+            value=data_maxima,     # Valor inicial = 18 anos atrás
+            min_value=data_minima, # Mínimo permitido
+            max_value=data_maxima, # Máximo permitido
+            help=f"Você deve ter pelo menos {idade_minima} anos"
+        )
+        
         usuario = st.text_input("Nome de Usuário*")
         senha = st.text_input("Senha*", type="password")
         confirmar = st.text_input("Confirme a Senha*", type="password")
 
         if st.button("Cadastrar"):
-            if senha != confirmar:
+            # Valida idade mínima
+            if data_nascimento > data_maxima:
+                st.error(f"Você deve ter pelo menos {idade_minima} anos para se cadastrar.")
+            # Valida senhas
+            elif senha != confirmar:
                 st.error("As senhas não coincidem.")
             else:
                 db = Session()
@@ -508,9 +536,7 @@ if not st.session_state.get("logged_in", False):
                         })
                         id_cliente = result.scalar()
 
-                        hoje = datetime.now()
                         expiracao = hoje + timedelta(days=30)
-
                         db.execute(text("""
                             INSERT INTO client_plans (
                                 id_client, id_plano, ativo, data_inclusao, data_expira_plan
@@ -523,6 +549,7 @@ if not st.session_state.get("logged_in", False):
                             "data_expira_plan": expiracao.strftime('%Y-%m-%d')
                         })
                         db.commit()
+
                         st.markdown("""
                             <div style='
                                 position: fixed;
@@ -565,6 +592,7 @@ if not st.session_state.get("logged_in", False):
                 finally:
                     db.close()
 
+
 if 'admin' not in st.session_state:
 # Inicializa variáveis no session_state para evitar erros de atributo inexistente
 
@@ -585,12 +613,14 @@ if 'admin' not in st.session_state:
         '>fAIxaBet®</div>
     """, unsafe_allow_html=True)
     try:
-        print("Senha input?!?:", senha_input)
+        print("Senha input:", senha_input)
         print("Senha hash (tipo):", type(senha_hash))
         print("Senha hash (conteúdo):", senha_hash)
+    except NameError as ne:
+        print(f"[AVISO] Variável não definida: {ne}")
     except Exception as e:
-        print("Erro ao imprimir senha:", e)
-    
+        print(f"[ERRO] Problema ao imprimir a senha: {e}")
+
     opcao_selecionada = st.sidebar.radio("Menu", ["Dashboard", "Gerar Bets", "Histórico", "Validar", "Financeiro", "Editar Perfil", "Sair"])
 
     if opcao_selecionada == "Dashboard":

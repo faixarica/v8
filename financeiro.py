@@ -16,7 +16,6 @@ def exibir_aba_financeiro():
     plano_id = st.session_state.usuario["id_plano"]
 
     db = Session()
-
     try:
         # 1. Carrega todos os planos
         result = db.execute(text("SELECT id, nome, valor, palpites_dia, loteria FROM planos"))
@@ -56,7 +55,7 @@ def exibir_aba_financeiro():
         else:
             st.info("Nenhum Pagamento Registrado Ainda.")
 
-        # 4. Alterar/assinar novo plano inserido em 24/08
+        # 4. Alterar/assinar novo plano
         st.markdown("---")
         st.markdown("### 💳 Alterar Plano e Efetuar Pagamento")
 
@@ -71,19 +70,26 @@ def exibir_aba_financeiro():
             if submitted:
                 novo_id = nome_to_id[novo_plano_nome]
                 valor_plano = planos[novo_id]["valor"]
+                plano_backend = planos[novo_id]["nome"].strip().lower()
 
                 if valor_plano > 0:
                     try:
-                        plano_backend = planos[novo_id]["nome"].strip().lower()
-
-                        # 🔹 Aqui entra a chamada ao backend
+                        # Chamada backend para criar sessão Stripe
                         resp = requests.post(
-                            f"{BACKEND_URL}/api/create-subscription-session",
-                            json={"user_id": user_id, "plan": plano_backend}
+                            f"{BACKEND_URL}/api/register-and-checkout",
+                            json={
+                                "user_id": user_id,
+                                "plan": plano_backend,
+                                "email": st.session_state.usuario["email"],
+                                "full_name": st.session_state.usuario.get("nome_completo", ""),
+                                "username": st.session_state.usuario.get("usuario", "")
+                            },
+                            timeout=10
                         )
 
                         if resp.status_code == 200:
-                            checkout_url = resp.json().get("url")
+                            data = resp.json()
+                            checkout_url = data.get("checkoutUrl")
                             if checkout_url:
                                 st.success("Sessão Stripe criada com sucesso!")
                                 st.markdown(f"[Clique aqui para pagar com segurança]({checkout_url})")
@@ -100,20 +106,22 @@ def exibir_aba_financeiro():
         else:
             st.info("Você já está no plano mais básico ou não há outros planos disponíveis.")
 
-
-
         # 5. Cancelar plano pago
         st.markdown("---")
         st.markdown("### ❌ Cancelar Plano Pago")
         if plano_id != 1:
             if st.button("Cancelar Plano e Voltar para o FREE"):
                 try:
+                    # 1. Atualiza usuários
                     db.execute(text("UPDATE usuarios SET id_plano = 1 WHERE id = :uid"), {"uid": user_id})
+                    # 2. Marca todos os client_plans ativos como inativos
                     db.execute(text("UPDATE client_plans SET ativo = 0 WHERE id_client = :uid AND ativo = 1"), {"uid": user_id})
                     db.commit()
+
+                    # Atualiza session_state
                     st.session_state.usuario["id_plano"] = 1
                     st.success("Plano Cancelado. Agora Você Está no Plano FREE.")
-                    st.rerun()
+                    st.experimental_rerun()  # força atualização do app
                 except Exception as e:
                     db.rollback()
                     st.error(f"Erro ao cancelar o plano: {e}")

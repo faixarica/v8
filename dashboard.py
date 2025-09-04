@@ -81,10 +81,20 @@ def grafico_frequencia_palpites():
 
 def mostrar_dashboard():
     apply_custom_css()
-    st.title("Painel Estatístico")
+    st.title("📊 Painel Estatístico")
+
+    usuario = st.session_state.get("usuario", {})
+    if not usuario:
+        st.error("Você precisa estar logado.")
+        return
+
+    user_id = usuario["id"]
+    plano_id = usuario["id_plano"]
+    tipo = usuario.get("tipo", "U")  # U = usuário comum, A = admin
 
     db = Session()
     try:
+        # Último resultado oficial
         ultimo_resultado = db.execute(text("""
             SELECT n1,n2,n3,n4,n5,n6,n7,n8,n9,n10,n11,n12,n13,n14,n15, data, concurso
             FROM resultados_oficiais
@@ -92,42 +102,101 @@ def mostrar_dashboard():
             LIMIT 1
         """)).fetchone()
 
-        total_palpites = db.execute(text("SELECT COUNT(*) FROM palpites")).scalar()
-        total_usuarios_ativos = db.execute(text("SELECT COUNT(DISTINCT id_usuario) FROM palpites")).scalar()
+        # Estatísticas globais
+        total_palpites_plataforma = db.execute(text("SELECT COUNT(*) FROM palpites")).scalar()
+        total_usuarios = db.execute(text("SELECT COUNT(*) FROM usuarios")).scalar()
+        total_ativos = db.execute(text("SELECT COUNT(DISTINCT id_usuario) FROM palpites")).scalar()
+
+        total_free = db.execute(text("SELECT COUNT(*) FROM usuarios WHERE id_plano = 1")).scalar()
+        total_silver = db.execute(text("SELECT COUNT(*) FROM usuarios WHERE id_plano = 2")).scalar()
+        total_gold = db.execute(text("SELECT COUNT(*) FROM usuarios WHERE id_plano = 3")).scalar()
+
+        # Estatísticas do usuário logado
+        total_user = db.execute(text("SELECT COUNT(*) FROM palpites WHERE id_usuario = :uid"),
+                                {"uid": user_id}).scalar()
+        total_user_dia = db.execute(text("""
+            SELECT COUNT(*) FROM palpites
+            WHERE id_usuario = :uid AND DATE(created_at) = CURRENT_DATE
+        """), {"uid": user_id}).scalar()
+
+        total_user_mes = db.execute(text("""
+            SELECT COUNT(*) FROM palpites
+            WHERE id_usuario = :uid
+            AND EXTRACT(MONTH FROM created_at) = EXTRACT(MONTH FROM CURRENT_DATE)
+            AND EXTRACT(YEAR FROM created_at) = EXTRACT(YEAR FROM CURRENT_DATE)
+        """), {"uid": user_id}).scalar()
+
     finally:
         db.close()
 
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<div class="metric-title">Total de Palpites</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="metric-value">{total_palpites}</div>', unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
+    # ============ CARDS DO USUÁRIO ============ #
+    st.subheader("📌 Seu Resumo")
+    cols = st.columns(3)
 
-    with col2:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<div class="metric-title">Usuários Ativos</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="metric-value">{total_usuarios_ativos}</div>', unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
+    if plano_id == 1:  # FREE
+        with cols[0]:
+            st.markdown('<div class="card">', unsafe_allow_html=True)
+            st.markdown('<div class="metric-title">Palpites Gerados</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-value">{total_user}</div>', unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
 
-    with col3:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<div class="metric-title">Último Sorteio</div>', unsafe_allow_html=True)
-        if ultimo_resultado:
-            numeros = ", ".join(map(str, ultimo_resultado[:15]))
-            data_sorteio = ultimo_resultado[15]
-            concurso = ultimo_resultado[16]
-            st.markdown(f'<div class="metric-value">Concurso: {concurso} ({data_sorteio})<br>{numeros}</div>', unsafe_allow_html=True)
-        else:
-            st.markdown('<div class="metric-value">N/A</div>', unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
+    elif plano_id == 2:  # SILVER
+        with cols[0]:
+            st.markdown('<div class="card"><div class="metric-title">Palpites Hoje</div>'
+                        f'<div class="metric-value">{total_user_dia}</div></div>', unsafe_allow_html=True)
+        with cols[1]:
+            st.markdown('<div class="card"><div class="metric-title">Palpites no Mês</div>'
+                        f'<div class="metric-value">{total_user_mes}</div></div>', unsafe_allow_html=True)
 
-    st.markdown("""
-        <hr style="margin-top:30px;">
-        <div style='text-align:center; font-size:12px; color:gray;'>
-            Aqui Não é Sorte • é AI 
-        </div>
-    """, unsafe_allow_html=True)
+    elif plano_id == 3:  # GOLD
+        with cols[0]:
+            st.markdown('<div class="card"><div class="metric-title">Palpites Hoje</div>'
+                        f'<div class="metric-value">{total_user_dia}</div></div>', unsafe_allow_html=True)
+        with cols[1]:
+            st.markdown('<div class="card"><div class="metric-title">Palpites no Mês</div>'
+                        f'<div class="metric-value">{total_user_mes}</div></div>', unsafe_allow_html=True)
+        with cols[2]:
+            st.markdown('<div class="card"><div class="metric-title">Palpites Plataforma</div>'
+                        f'<div class="metric-value">{total_palpites_plataforma}</div></div>', unsafe_allow_html=True)
+
+    # ============ ADMIN EXTRA ============ #
+    if tipo == "A":
+        st.subheader("🛠️ Estatísticas Administrativas")
+        cols_admin = st.columns(4)
+
+        with cols_admin[0]:
+            st.markdown('<div class="card"><div class="metric-title">Usuários Totais</div>'
+                        f'<div class="metric-value">{total_usuarios}</div></div>', unsafe_allow_html=True)
+        with cols_admin[1]:
+            st.markdown('<div class="card"><div class="metric-title">Usuários Ativos</div>'
+                        f'<div class="metric-value">{total_ativos}</div></div>', unsafe_allow_html=True)
+        with cols_admin[2]:
+            st.markdown('<div class="card"><div class="metric-title">Free</div>'
+                        f'<div class="metric-value">{total_free}</div></div>', unsafe_allow_html=True)
+        with cols_admin[3]:
+            st.markdown('<div class="card"><div class="metric-title">Silver</div>'
+                        f'<div class="metric-value">{total_silver}</div></div>', unsafe_allow_html=True)
+        st.markdown(f"""
+            <div class="card" style="margin-top:15px;">
+                <div class="metric-title">Gold</div>
+                <div class="metric-value">{total_gold}</div>
+            </div>
+        """, unsafe_allow_html=True)
+
+    # ============ ÚLTIMO CONCURSO ============ #
+    st.subheader("🎲 Último Concurso")
+    if ultimo_resultado:
+        numeros = ", ".join(map(str, ultimo_resultado[:15]))
+        data_sorteio = ultimo_resultado[15]
+        concurso = ultimo_resultado[16]
+        st.info(f"Concurso {concurso} ({data_sorteio}) → {numeros}")
+    else:
+        st.warning("Nenhum resultado encontrado.")
+
+    st.markdown("<hr style='margin-top:30px;'>"
+                "<div style='text-align:center; font-size:12px; color:gray;'>"
+                "Aqui Não é Sorte • é AI </div>", unsafe_allow_html=True)
+
 
 # As demais funções do dashboard que consultam o banco via pandas.read_sql devem ser adaptadas em seguida.
 # Substituir o uso de sqlite3.connect por SQLAlchemy: engine = create_engine(DATABASE_URL)

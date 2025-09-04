@@ -74,33 +74,33 @@ def exibir_aba_financeiro():
 
                 if valor_plano > 0:
                     try:
-                        # Chamada backend para criar sessão Stripe
+                        # 🔹 rota especial para troca de plano (usuário já existe)
                         resp = requests.post(
-                            f"{BACKEND_URL}/api/register-and-checkout",
-                            json={
-                                "user_id": user_id,
-                                "plan": plano_backend,
-                                "email": st.session_state.usuario["email"],
-                                "full_name": st.session_state.usuario.get("nome_completo", ""),
-                                "username": st.session_state.usuario.get("usuario", "")
-                            },
-                            timeout=10
-                        )
+                        f"{BACKEND_URL}/api/change-plan",
+                        json={
+                            "user_id": user_id,
+                            "plan": plano_backend,
+                            "email": st.session_state.usuario["email"],
+                            "full_name": st.session_state.usuario.get("nome_completo", ""),
+                            "username": st.session_state.usuario.get("usuario", "")
+                        },
+                        timeout=10
+                    )
 
                         if resp.status_code == 200:
                             data = resp.json()
                             checkout_url = data.get("checkoutUrl")
                             if checkout_url:
-                                st.success("Sessão Stripe criada com sucesso!")
+                                st.success(f"Mudança para {novo_plano_nome} iniciada!")
                                 st.markdown(f"[Clique aqui para pagar com segurança]({checkout_url})")
                                 webbrowser.open_new_tab(checkout_url)
                             else:
                                 st.error("Erro: não foi possível obter URL do checkout.")
                         else:
-                            st.error(f"Erro ao criar sessão de pagamento: {resp.text}")
+                            st.error(f"Erro ao trocar de plano: {resp.text}")
 
                     except Exception as e:
-                        st.error(f"Falha ao iniciar checkout: {e}")
+                        st.error(f"Falha ao trocar de plano: {e}")
                 else:
                     st.warning("Plano gratuito não requer pagamento.")
         else:
@@ -115,19 +115,18 @@ def exibir_aba_financeiro():
                     # 1. Atualiza usuários
                     db.execute(text("UPDATE usuarios SET id_plano = 1 WHERE id = :uid"), {"uid": user_id})
                     # 2. Marca todos os client_plans ativos como inativos
-                    db.execute(text("UPDATE client_plans SET ativo = 0 WHERE id_client = :uid AND ativo = 1"), {"uid": user_id})
+                    db.execute(text("UPDATE client_plans SET ativo = false WHERE id_client = :uid AND ativo = true"), {"uid": user_id})
                     db.commit()
 
                     # Atualiza session_state
                     st.session_state.usuario["id_plano"] = 1
                     st.success("Plano Cancelado. Agora Você Está no Plano FREE.")
-                    st.experimental_rerun()  # força atualização do app
+                    st.experimental_rerun()
                 except Exception as e:
                     db.rollback()
                     st.error(f"Erro ao cancelar o plano: {e}")
         else:
             st.info("Você já está no Plano FREE.")
-
     except Exception as e:
         st.error(f"Erro inesperado ao carregar área financeira: {e}")
     finally:

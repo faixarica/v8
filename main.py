@@ -1,9 +1,13 @@
-# main v8.01
+# main v8.003
 # -------------------- [1] IMPORTS --------------------
 
 import os
 import secrets
 import streamlit as st
+import smtplib
+import streamlit.components.v1 as components
+import requests
+import pandas as pds
 from datetime import datetime, date, timedelta
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
@@ -14,11 +18,10 @@ from palpites import gerar_palpite, historico_palpites, validar_palpite
 from auth import logout
 from perfil import editar_perfil
 from financeiro import exibir_aba_financeiro
-import requests
-import pandas as pd
-from passlib.hash import pbkdf2_sha256
-import streamlit.components.v1 as components
 
+from passlib.hash import pbkdf2_sha256
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 # -------------------- [2] CONFIGS --------------------
 
 st.set_page_config(page_title="fAIxaBet", layout="centered")
@@ -268,6 +271,51 @@ def calcular_palpites_periodo(id_usuario):
     finally:
         db.close()
 
+# Função para enviar e-mail (coloque fora de qualquer bloco condicional)
+
+def enviar_email_recuperacao(destinatario, token):
+    try:
+        # Configurações do servidor SMTP (exemplo com Gmail)
+        smtp_server = "smtp.gmail.com"
+        smtp_port = 587
+        remetente_email = "seu_email@gmail.com"  # Substitua pelo seu e-mail
+        senha_email = "sua_senha_app"  # Substitua pela sua App Password do Gmail
+        
+        # Criar mensagem
+        msg = MIMEMultipart()
+        msg['From'] = remetente_email
+        msg['To'] = destinatario
+        msg['Subject'] = "Recuperação de Senha - fAIxaBet"
+        
+        # Corpo do e-mail
+        corpo = f"""
+        Olá,
+        
+        Você solicitou a recuperação de senha.
+        Use o seguinte token para redefinir sua senha: {token}
+        
+        Este token é válido por 1 hora.
+        
+        Se você não solicitou isso, ignore este e-mail.
+        
+        Atenciosamente,
+        Equipe fAIxaBet
+        """
+        msg.attach(MIMEText(corpo, 'plain'))
+        
+        # Enviar e-mail
+        server = smtplib.SMTP(smtp_server, smtp_port)
+        server.starttls()
+        server.login(remetente_email, senha_email)
+        texto = msg.as_string()
+        server.sendmail(remetente_email, destinatario, texto)
+        server.quit()
+        
+        return True
+    except Exception as e:
+        print(f"Erro ao enviar e-mail: {e}")
+        return False
+
 # -------------------- [4] APLICAÇÃO STREAMLIT --------------------
 
 # =========================================================
@@ -297,7 +345,7 @@ if "show_recover_modal" not in st.session_state:
     st.session_state.show_recover_modal = False
 if "show_reset_modal" not in st.session_state:
     st.session_state.show_reset_modal = False
-
+#============= começo
 # =========================================================
 # Login
 # =========================================================
@@ -307,164 +355,186 @@ if not st.session_state.get("logged_in", False):
     st.write("")
 
     if aba == "Entrar":
-        usuario_input = st.text_input("Usuário")
-        senha_input = st.text_input("Senha", type="password")
+        # Inicializar estados para o fluxo de recuperação
+        if "recover_step" not in st.session_state:
+            st.session_state.recover_step = 0  # 0 = login normal, 1 = recuperar email, 2 = redefinir senha
 
-        if st.button("Entrar"):
-            db = Session()
-            sucesso_login = False
-            try:
-                # Login admin
-                if usuario_input == "ufaixa990" and senha_input == "ufaixa990!":
-                    st.session_state.logged_in = True
-                    st.session_state.usuario = {
-                        "id": 0, "nome": "Administrador", "email": "adm@faixabet.com",
-                        "tipo": "admin", "id_plano": 0
-                    }
-                    st.session_state.admin = True
-                    st.success("Login administrativo realizado!")
-                    sucesso_login = True
-                else:
-                    # Usuário normal
-                    result = db.execute(text("""
-                        SELECT u.id, u.tipo, u.usuario, u.email, u.senha, u.ativo, u.id_plano
-                        FROM usuarios u WHERE u.usuario = :usuario
-                    """), {"usuario": usuario_input})
-                    user = result.fetchone()
-
-                    if user:
-                        id, tipo, usuario, email, senha_hash, ativo, id_plano_armazenado = user
-                        result = db.execute(text("""
-                            SELECT cp.id_plano FROM client_plans cp
-                            WHERE cp.id_client = :id AND cp.ativo = true
-                            ORDER BY cp.data_inclusao DESC LIMIT 1
-                        """), {"id": id})
-                        row = result.fetchone()
-                        id_plano_ativo = row[0] if row else None
-                        id_plano_atual = id_plano_ativo or id_plano_armazenado
-
-                        if id_plano_armazenado != id_plano_atual:
-                            try:
-                                db.execute(text("UPDATE usuarios SET id_plano = :plano WHERE id = :id"),
-                                           {"plano": id_plano_atual, "id": id})
-                                db.commit()
-                            except:
-                                db.rollback()
-                                st.warning("Não foi possível atualizar o plano do usuário.")
-
-                        if senha_hash and pbkdf2_sha256.verify(senha_input, senha_hash):
-                            if ativo:
-                                st.session_state.logged_in = True
-                                st.session_state.usuario = {
-                                    "id": id, "nome": usuario, "email": email,
-                                    "tipo": tipo, "id_plano": id_plano_atual
-                                }
-                                if tipo == "admin":
-                                    st.session_state.admin = True
-                                registrar_login(id)
-                                st.success("Login realizado com sucesso!")
-                                sucesso_login = True
-                            else:
-                                st.error("Conta inativa.")
+        # Mostrar login normal ou fluxo de recuperação
+        if st.session_state.recover_step == 0:
+            # === Formulário de Login ===
+            with st.form("login_form"):
+                usuario_input = st.text_input("Usuário")
+                senha_input = st.text_input("Senha", type="password")
+                submitted = st.form_submit_button("Entrar")
+                
+                if submitted:
+                    db = Session()
+                    sucesso_login = False
+                    try:
+                        # Login admin
+                        if usuario_input == "ufaixa990" and senha_input == "ufaixa990!":
+                            st.session_state.logged_in = True
+                            st.session_state.usuario = {
+                                "id": 0, "nome": "Administrador", "email": "adm@faixabet.com",
+                                "tipo": "admin", "id_plano": 0
+                            }
+                            st.session_state.admin = True
+                            st.success("Login administrativo realizado!")
+                            sucesso_login = True
                         else:
-                            st.error("Senha incorreta.")
-                    else:
-                        st.error("Usuário não encontrado.")
-            except Exception as e:
-                if "Cancelled" not in str(e):
-                    st.error(f"Erro durante o login: {e}")
-            finally:
-                db.close()
+                            # Usuário normal
+                            result = db.execute(text("""
+                                SELECT u.id, u.tipo, u.usuario, u.email, u.senha, u.ativo, u.id_plano
+                                FROM usuarios u WHERE u.usuario = :usuario
+                            """), {"usuario": usuario_input})
+                            user = result.fetchone()
 
-            if sucesso_login:
+                            if user:
+                                id, tipo, usuario, email, senha_hash, ativo, id_plano_armazenado = user
+                                result = db.execute(text("""
+                                    SELECT cp.id_plano FROM client_plans cp
+                                    WHERE cp.id_client = :id AND cp.ativo = true
+                                    ORDER BY cp.data_inclusao DESC LIMIT 1
+                                """), {"id": id})
+                                row = result.fetchone()
+                                id_plano_ativo = row[0] if row else None
+                                id_plano_atual = id_plano_ativo or id_plano_armazenado
+
+                                if id_plano_armazenado != id_plano_atual:
+                                    try:
+                                        db.execute(text("UPDATE usuarios SET id_plano = :plano WHERE id = :id"),
+                                                   {"plano": id_plano_atual, "id": id})
+                                        db.commit()
+                                    except:
+                                        db.rollback()
+                                        st.warning("Não foi possível atualizar o plano do usuário.")
+
+                                if senha_hash and pbkdf2_sha256.verify(senha_input, senha_hash):
+                                    if ativo:
+                                        st.session_state.logged_in = True
+                                        st.session_state.usuario = {
+                                            "id": id, "nome": usuario, "email": email,
+                                            "tipo": tipo, "id_plano": id_plano_atual
+                                        }
+                                        if tipo == "admin":
+                                            st.session_state.admin = True
+                                        registrar_login(id)
+                                        st.success("Login realizado com sucesso!")
+                                        sucesso_login = True
+                                    else:
+                                        st.error("Conta inativa.")
+                                else:
+                                    st.error("Senha incorreta.")
+                            else:
+                                st.error("Usuário não encontrado.")
+                    except Exception as e:
+                        if "Cancelled" not in str(e):
+                            st.error(f"Erro durante o login: {e}")
+                    finally:
+                        db.close()
+
+                    if sucesso_login:
+                        st.rerun()
+
+            # === Botão de Recuperação ===
+            if st.button("Esqueceu a senha?"):
+                st.session_state.recover_step = 1
                 st.rerun()
 
-        # =========================================================
-        # Botões para abrir os "modais"
-        # =========================================================
-        col1, col2 = st.columns([1, 1])
-        with col1:
-            if st.button("Esqueceu a senha?"):
-                st.session_state.show_recover_modal = True
-        with col2:
-            if st.button("Já tenho token"):
-                st.session_state.show_reset_modal = True
-
-        # =========================================================
-        # "Modal" de Recuperação de Senha
-        # =========================================================
-        if st.session_state.show_recover_modal:
-            with st.container():
-                st.markdown("### 🔑 Recuperar Senha")
-                email_rec = st.text_input("E-mail cadastrado", key="recover_email")
-                col_a, col_b = st.columns([1,1])
-                with col_a:
-                    if st.button("Enviar link"):
+        # === Etapa 1: Recuperação por E-mail ===
+        elif st.session_state.recover_step == 1:
+            st.markdown("### 🔑 Recuperar Senha")
+            with st.form("recover_form"):
+                email_rec = st.text_input("E-mail cadastrado")
+                col1, col2 = st.columns(2)
+                with col1:
+                    submitted = st.form_submit_button("Enviar link de recuperação")
+                with col2:
+                    cancel = st.form_submit_button("Voltar ao login")
+                
+                if submitted:
+                    if not email_rec:
+                        st.error("Por favor, insira um e-mail.")
+                    else:
                         db = Session()
                         try:
                             result = db.execute(text("SELECT id FROM usuarios WHERE email = :email"),
                                                 {"email": email_rec})
                             user = result.fetchone()
-                            if user:
-                                token = gerar_token_recuperacao(user[0], db)
-                                if token:
-                                    st.success("Link de recuperação gerado (DEBUG).")
-                                    st.info(f"Token: {token}")
-                                    st.session_state.show_recover_modal = False
+                            if user:  # Verificar se usuário existe primeiro
+                                token = gerar_token_recuperacao(user[0], db)  # Gerar token aqui
+                                # TRECHO CORRIGIDO (envia o e-mail):
+                                if token:  # Verificar se token foi gerado
+                                    # ENVIAR TOKEN POR E-MAIL
+                                    if enviar_email_recuperacao(email_rec, token):
+                                        st.success("E-mail de recuperação enviado com sucesso!")
+                                        st.session_state.recover_step = 2
+                                        st.session_state.recovery_email = email_rec
+                                        st.rerun()
+                                    else:
+                                        st.error("Erro ao enviar e-mail. Contate o suporte.")
                             else:
                                 st.error("E-mail não encontrado.")
                         except Exception as e:
                             st.error(f"Erro: {e}")
                         finally:
                             db.close()
-                with col_b:
-                    if st.button("Cancelar"):
-                        st.session_state.show_recover_modal = False
+                
+                if cancel:
+                    st.session_state.recover_step = 0
+                    st.rerun()
 
-        # =========================================================
-        # "Modal" de Redefinição de Senha
-        # =========================================================
-        if st.session_state.show_reset_modal:
-            with st.container():
-                st.markdown("### 🔒 Definir Nova Senha")
-                token_input = st.text_input("Token de recuperação", key="reset_token")
-                nova_senha = st.text_input("Nova senha", type="password", key="reset_nova")
-                confirmar_senha = st.text_input("Confirmar nova senha", type="password", key="reset_confirm")
-                col_a, col_b = st.columns([1,1])
-                with col_a:
-                    if st.button("Redefinir"):
-                        if nova_senha != confirmar_senha:
-                            st.error("As senhas não conferem.")
-                        else:
-                            db = Session()
-                            try:
-                                result = db.execute(text("""
-                                    SELECT user_id, expira_em FROM password_resets WHERE token = :token
-                                """), {"token": token_input})
-                                row = result.fetchone()
-                                if row:
-                                    user_id, expira_em = row
-                                    if datetime.utcnow() > expira_em:
-                                        st.error("Token expirado.")
-                                    else:
-                                        senha_hash = pbkdf2_sha256.hash(nova_senha)
-                                        db.execute(text("UPDATE usuarios SET senha = :senha WHERE id = :id"),
-                                                   {"senha": senha_hash, "id": user_id})
-                                        db.execute(text("DELETE FROM password_resets WHERE user_id = :id"),
-                                                   {"id": user_id})
-                                        db.commit()
-                                        st.success("Senha redefinida com sucesso!")
-                                        st.session_state.show_reset_modal = False
+        # === Etapa 2: Redefinição de Senha ===
+        elif st.session_state.recover_step == 2:
+            st.markdown("### 🔒 Redefinir Senha")
+            with st.form("reset_form"):
+                st.info(f"Token enviado para: {st.session_state.get('recovery_email', '')}")
+                token_input = st.text_input("Token de recuperação")
+                nova_senha = st.text_input("Nova senha", type="password")
+                confirmar_senha = st.text_input("Confirmar nova senha", type="password")
+                col1, col2 = st.columns(2)
+                with col1:
+                    submitted = st.form_submit_button("Redefinir senha")
+                with col2:
+                    cancel = st.form_submit_button("Voltar ao login")
+                
+                if submitted:
+                    if nova_senha != confirmar_senha:
+                        st.error("As senhas não conferem.")
+                    elif not token_input:
+                        st.error("Por favor, insira o token.")
+                    else:
+                        db = Session()
+                        try:
+                            result = db.execute(text("""
+                                SELECT user_id, expira_em FROM password_resets WHERE token = :token
+                            """), {"token": token_input})
+                            row = result.fetchone()
+                            if row:
+                                user_id, expira_em = row
+                                if datetime.utcnow() > expira_em:
+                                    st.error("Token expirado.")
                                 else:
-                                    st.error("Token inválido.")
-                            except Exception as e:
-                                db.rollback()
-                                st.error(f"Erro: {e}")
-                            finally:
-                                db.close()
-                with col_b:
-                    if st.button("Cancelar"):
-                        st.session_state.show_reset_modal = False
+                                    senha_hash = pbkdf2_sha256.hash(nova_senha)
+                                    db.execute(text("UPDATE usuarios SET senha = :senha WHERE id = :id"),
+                                               {"senha": senha_hash, "id": user_id})
+                                    db.execute(text("DELETE FROM password_resets WHERE user_id = :id"),
+                                               {"id": user_id})
+                                    db.commit()
+                                    st.success("Senha redefinida com sucesso!")
+                                    st.session_state.recover_step = 0  # Voltar ao login
+                                    st.rerun()
+                            else:
+                                st.error("Token inválido.")
+                        except Exception as e:
+                            db.rollback()
+                            st.error(f"Erro: {e}")
+                        finally:
+                            db.close()
+                
+                if cancel:
+                    st.session_state.recover_step = 0
+                    st.rerun()
 
     elif aba == "Cadastro":
         st.info("⚠️ Tela de cadastro ainda não implementada.")
@@ -472,27 +542,20 @@ if not st.session_state.get("logged_in", False):
         hoje = date.today()
         idade_minima = 18
 
-        # Define a data máxima permitida (para ter pelo menos 18 anos)
         try:
             data_maxima = date(hoje.year - idade_minima, hoje.month, hoje.day)
         except ValueError:
-            # Corrige anos bissextos (ex: 29/02)
             data_maxima = date(hoje.year - idade_minima, 2, 28)
 
-        # Campos de cadastro
         nome = st.text_input("Nome Completo*")
         email = st.text_input("Email*")
         telefone = st.text_input("Telefone")
         
-        # Data de nascimento com valor inicial igual ao máximo permitido
-        data_maxima = date(hoje.year - idade_minima, hoje.month, hoje.day)
-        data_minima = date(1900, 1, 1)  # Permite escolher desde 1900
-
         data_nascimento = st.date_input(
             "Data de Nascimento*",
-            value=data_maxima,     # Valor inicial = 18 anos atrás
-            min_value=data_minima, # Mínimo permitido
-            max_value=data_maxima, # Máximo permitido
+            value=data_maxima,
+            min_value=date(1900, 1, 1),
+            max_value=data_maxima,
             help=f"Você deve ter pelo menos {idade_minima} anos"
         )
         
@@ -501,10 +564,8 @@ if not st.session_state.get("logged_in", False):
         confirmar = st.text_input("Confirme a Senha*", type="password")
 
         if st.button("Cadastrar"):
-            # Valida idade mínima
             if data_nascimento > data_maxima:
-                st.error(f"Você deve ter pelo menos {idade_minima} anos para se cadastrar.")
-            # Valida senhas
+                st.error(f"Você deve ter pelo menos {idade_minima} anos.")
             elif senha != confirmar:
                 st.error("As senhas não coincidem.")
             else:
@@ -591,14 +652,14 @@ if not st.session_state.get("logged_in", False):
                     st.error(f"Erro no cadastro: {e}")
                 finally:
                     db.close()
-
-
+#========================== fim       
+             
 if 'admin' not in st.session_state:
-# Inicializa variáveis no session_state para evitar erros de atributo inexistente
+    # Inicializa variáveis no session_state para evitar erros de atributo inexistente
+    pass
 
 # LOGIN / CADASTRO 2
-
- if st.session_state.get("logged_in", False):
+if st.session_state.get("logged_in", False):
     nome_usuario = st.session_state.usuario.get("nome", "Usuário")
     st.sidebar.title(f"Bem-Vindo, {nome_usuario}")
 
@@ -612,6 +673,7 @@ if 'admin' not in st.session_state:
             border-bottom: 1px solid #DDD;
         '>fAIxaBet®</div>
     """, unsafe_allow_html=True)
+    
     try:
         print("Senha input:", senha_input)
         print("Senha hash (tipo):", type(senha_hash))
@@ -621,28 +683,54 @@ if 'admin' not in st.session_state:
     except Exception as e:
         print(f"[ERRO] Problema ao imprimir a senha: {e}")
 
-    opcao_selecionada = st.sidebar.radio("Menu", ["Dashboard", "Gerar Bets", "Histórico", "Validar", "Financeiro", "Editar Perfil", "Sair"])
+    opcao_selecionada = st.sidebar.radio("Menu", ["Painel Estatístico", "Gerar Novas Bets", "Histórico", "Validar Bets Gerada", "Assinatura ", "Editar Perfil", "Sair"])
 
-    if opcao_selecionada == "Dashboard":
+    if opcao_selecionada == "Painel Estatístico":
         mostrar_dashboard()
         # Exibe métricas de palpites do usuário logado
         dia, semana, mes = calcular_palpites_periodo(st.session_state.usuario["id"])
+
         st.markdown("---")
-        st.metric("Palpites hoje", dia)
-        st.metric("Palpites na semana", semana)
-        st.metric("Palpites no mês", mes)
+
+        # Layout em 3 colunas
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            st.markdown(f"""
+            <div style="border: 2px solid #f59e0b; border-radius: 12px; padding: 20px; background-color:#fff; text-align:center;">
+                <div style="font-size:14px; color:#333;">Palpites Hoje</div>
+                <div style="font-size:24px; font-weight:bold; margin-top:5px;">{dia}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        with col2:
+            st.markdown(f"""
+            <div style="border: 2px solid #f59e0b; border-radius: 12px; padding: 20px; background-color:#fff; text-align:center;">
+                <div style="font-size:14px; color:#333;">Palpites na Semana</div>
+                <div style="font-size:24px; font-weight:bold; margin-top:5px;">{semana}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        with col3:
+            st.markdown(f"""
+            <div style="border: 2px solid #f59e0b; border-radius: 12px; padding: 20px; background-color:#fff; text-align:center;">
+                <div style="font-size:14px; color:#333;">Palpites no Mês</div>
+                <div style="font-size:24px; font-weight:bold; margin-top:5px;">{mes}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
         
-    elif opcao_selecionada == "Gerar Bets":
+    elif opcao_selecionada == "Gerar Novas Bets":
         gerar_palpite()
         
     elif opcao_selecionada == "Histórico":
         historico_palpites()
         
-    elif opcao_selecionada == "Validar":
+    elif opcao_selecionada == "Validar Bets Gerada":
         validar_palpite()
         
-    elif opcao_selecionada == "Financeiro":
-        st.subheader("Financeiro") # Título da seção
+    elif opcao_selecionada == "Assinatura ":
+        st.subheader("Assinatura ") # Título da seção
         exibir_aba_financeiro()
         
     elif opcao_selecionada == "Editar Perfil":
@@ -653,11 +741,10 @@ if 'admin' not in st.session_state:
         logout() # Deve limpar a sessão e fazer st.rerun()
 
     # Rodapé da sidebar
- else:
+else:
     # Opcional: Mensagem se, por algum motivo, este código rodar sem o usuário estar logado
-    st.warning("Você precisa estar logado para acessar o menu.")
+    #st.warning("Você precisa estar logado para acessar o menu.")
     # Mova esta função inteira para antes da linha 339 (if opcao_selecionada == "Dashboard":)
    
 # --- FIM DO BLOCO DE LOGIN / CADASTRO ---
-
-st.sidebar.markdown("<div style='text-align:left; color:green; font-size:16px;'>fAIxaBet v8.02</div>", unsafe_allow_html=True)
+    st.sidebar.markdown("<div style='text-align:left; color:green; font-size:16px;'>fAIxaBet v8.03</div>", unsafe_allow_html=True)

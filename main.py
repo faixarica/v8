@@ -8,8 +8,10 @@ import smtplib
 import streamlit.components.v1 as components
 import requests
 import pandas as pds
-from passlib.hash import pbkdf2_sha256
+import base64
+import hashlib
 
+from passlib.hash import pbkdf2_sha256
 from datetime import datetime, date, timedelta
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
@@ -341,13 +343,78 @@ def gerar_token_recuperacao(user_id, db):
         return None
 
 
-def verificar_senha(senha_digitada, senha_hash):
+# =========================================================
+# Função para verificar senha hashPasswordPBKDF2 e
+# =========================================================
+
+def verify_pbkdf2_legacy(password, hash_string):
+    """
+    Tenta validar o hash pbkdf2_sha256 em formatos "legados":
+     - salt em base64 (unpadded)
+     - salt em hex (bytes.fromhex)
+     - salt como string ascii (caso o server tenha passado a representação textual)
+    Retorna True se alguma tentativa bater.
+    """
+    try:
+        parts = hash_string.split('$')
+        if len(parts) != 4:
+            return False
+        _, rounds_str, salt_str, checksum = parts
+        rounds = int(rounds_str)
+    except Exception:
+        return False
+
+    chk_norm = checksum.rstrip('=')
+
+    candidates = []
+    # 1) tentar decodificar salt como base64 (corrige unpadded)
+    try:
+        padded = salt_str + ('=' * (-len(salt_str) % 4))
+        candidates.append(base64.b64decode(padded))
+    except Exception:
+        pass
+    # 2) tentar decodificar salt como hex
+    try:
+        candidates.append(bytes.fromhex(salt_str))
+    except Exception:
+        pass
+    # 3) salt como bytes da string (caso o node tenha passado ascii)
+    candidates.append(salt_str.encode('utf-8'))
+
+    for salt_bytes in candidates:
+        try:
+            derived = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt_bytes, rounds, dklen=32)
+            derived_b64 = base64.b64encode(derived).decode('ascii').rstrip('=')
+            if derived_b64 == chk_norm:
+                return True
+        except Exception:
+            continue
+    return False
+
+def verificar_senha(senha_digitada, senha_hash, db=None, user_id=None):
+    # PBKDF2 / passlib
     if senha_hash.startswith("pbkdf2_sha256$"):
-        # remove '=' no final se existir
-        if senha_hash.endswith("="):
-            senha_hash = senha_hash.rstrip("=")
-        return pbkdf2_sha256.verify(senha_digitada, senha_hash)
+        # tenta validar com passlib (normalizando padding)
+        try:
+            return pbkdf2_sha256.verify(senha_digitada, senha_hash.rstrip("="))
+        except Exception:
+            # fallback para formatos legados (antes da correção no server.js)
+            if verify_pbkdf2_legacy(senha_digitada, senha_hash):
+                # MIGRAÇÃO: re-hash com passlib e atualiza o DB para o formato correto
+                if db is not None and user_id is not None:
+                    try:
+                        novo_hash = pbkdf2_sha256.hash(senha_digitada)
+                        db.execute(text("UPDATE usuarios SET senha = :senha WHERE id = :id"),
+                                   {"senha": novo_hash, "id": user_id})
+                        db.commit()
+                    except Exception:
+                        db.rollback()
+                return True
+            return False
+
+    # bcrypt (mantém como está)
     elif senha_hash.startswith("$2a$") or senha_hash.startswith("$2b$"):
+        import bcrypt
         return bcrypt.checkpw(senha_digitada.encode(), senha_hash.encode())
     else:
         return False
@@ -424,7 +491,9 @@ if not st.session_state.get("logged_in", False):
                                         db.rollback()
                                         st.warning("Não foi possível atualizar o plano do usuário.")
 
-                                if senha_hash and verificar_senha(senha_input, senha_hash):
+                                # agora (passando db e id para permitir migração)
+                                if senha_hash and verificar_senha(senha_input, senha_hash, db=db, user_id=id):
+
                                     if ativo:
                                         st.session_state.logged_in = True
                                         st.session_state.usuario = {

@@ -321,7 +321,14 @@ def enviar_email_recuperacao(destinatario, token):
         return False
 
 # -------------------- [4] APLICAÇÃO STREAMLIT --------------------
-
+# =========================================================
+# Controle de visibilidade do "modal" (container)
+# =========================================================
+if "show_recover_modal" not in st.session_state:
+    st.session_state.show_recover_modal = False
+if "show_reset_modal" not in st.session_state:
+    st.session_state.show_reset_modal = False
+    
 # =========================================================
 # Função para gerar token de recuperação
 # =========================================================
@@ -393,26 +400,28 @@ def verify_pbkdf2_legacy(password, hash_string):
 
 def verificar_senha(senha_digitada, senha_hash, db=None, user_id=None):
     from passlib.hash import pbkdf2_sha256
+    import bcrypt
 
-    if senha_hash.startswith("pbkdf2_sha256$"):
+    if not senha_hash:
+        return False
+
+    # Limpeza automática: remove espaços, quebras de linha e retornos de carro
+    senha_hash_clean = senha_hash.strip().replace("\n", "").replace("\r", "")
+
+    # PBKDF2 (passlib)
+    if senha_hash_clean.startswith("pbkdf2_sha256$") or senha_hash_clean.startswith("$pbkdf2-sha256$"):
         try:
-            return pbkdf2_sha256.verify(senha_digitada, senha_hash)
+            return pbkdf2_sha256.verify(senha_digitada, senha_hash_clean)
         except Exception:
             return False
+
     # bcrypt (mantém como está)
-    elif senha_hash.startswith("$2a$") or senha_hash.startswith("$2b$"):
-        import bcrypt
-        return bcrypt.checkpw(senha_digitada.encode(), senha_hash.encode())
-    
+    elif senha_hash_clean.startswith("$2a$") or senha_hash_clean.startswith("$2b$"):
+        return bcrypt.checkpw(senha_digitada.encode(), senha_hash_clean.encode())
+
     return False
 
-# =========================================================
-# Controle de visibilidade do "modal" (container)
-# =========================================================
-if "show_recover_modal" not in st.session_state:
-    st.session_state.show_recover_modal = False
-if "show_reset_modal" not in st.session_state:
-    st.session_state.show_reset_modal = False
+
 #============= começo
 # =========================================================
 # Login
@@ -478,8 +487,9 @@ if not st.session_state.get("logged_in", False):
                                         st.warning("Não foi possível atualizar o plano do usuário.")
 
                                 # agora (passando db e id para permitir migração)
-                                st.write("DEBUG senha_input:", repr(senha_input))
-                                st.write("DEBUG senha_hash:", repr(senha_hash))
+                                #st.write("DEBUG senha_hash raw:", repr(senha_hash))
+                                #senha_hash = senha_hash.strip().replace("\n", "").replace("\r", "")
+                                #st.write("DEBUG senha_hash clean:", repr(senha_hash))
 
                                 if senha_hash and verificar_senha(senha_input, senha_hash, db=db, user_id=id):
 

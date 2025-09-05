@@ -146,7 +146,7 @@ def gerar_palpite_estatistico(limite=15):
         st.error(f"Erro em gerar_palpite_estatistico: {e}")
         return gerar_palpite_aleatorio(limite)
     finally:
-        
+        db.close()
 
 @st.cache_resource
 def carregar_modelo(nome_modelo="ls15"):

@@ -392,6 +392,24 @@ def verify_pbkdf2_legacy(password, hash_string):
     return False
 
 def verificar_senha(senha_digitada, senha_hash, db=None, user_id=None):
+    if senha_hash.startswith("pbkdf2_sha256$"):
+        try:
+            return pbkdf2_sha256.verify(senha_digitada, senha_hash.rstrip("="))
+        except Exception:
+            # só tenta fallback se hash tiver sinais de legado
+            if any(x in senha_hash for x in ["=", "+", "/", "$pbkdf2-sha256$"]):
+                if verify_pbkdf2_legacy(senha_digitada, senha_hash):
+                    # migra apenas se login passou no legado
+                    if db is not None and user_id is not None:
+                        try:
+                            novo_hash = pbkdf2_sha256.hash(senha_digitada)
+                            db.execute(text("UPDATE usuarios SET senha = :senha WHERE id = :id"),
+                                       {"senha": novo_hash, "id": user_id})
+                            db.commit()
+                        except Exception:
+                            db.rollback()
+                    return True
+            return False
     # PBKDF2 / passlib
     if senha_hash.startswith("pbkdf2_sha256$"):
         # tenta validar com passlib (normalizando padding)

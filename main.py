@@ -343,11 +343,15 @@ def gerar_token_recuperacao(user_id, db):
 
 def verificar_senha(senha_digitada, senha_hash):
     if senha_hash.startswith("pbkdf2_sha256$"):
+        # remove '=' no final se existir
+        if senha_hash.endswith("="):
+            senha_hash = senha_hash.rstrip("=")
         return pbkdf2_sha256.verify(senha_digitada, senha_hash)
     elif senha_hash.startswith("$2a$") or senha_hash.startswith("$2b$"):
         return bcrypt.checkpw(senha_digitada.encode(), senha_hash.encode())
     else:
         return False
+
 
 # =========================================================
 # Controle de visibilidade do "modal" (container)

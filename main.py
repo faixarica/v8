@@ -8,6 +8,8 @@ import smtplib
 import streamlit.components.v1 as components
 import requests
 import pandas as pds
+from passlib.hash import pbkdf2_sha256
+
 from datetime import datetime, date, timedelta
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
@@ -338,6 +340,15 @@ def gerar_token_recuperacao(user_id, db):
         st.error(f"Erro ao gerar token de recuperação: {e}")
         return None
 
+
+def verificar_senha(senha_digitada, senha_hash):
+    if senha_hash.startswith("pbkdf2_sha256$"):
+        return pbkdf2_sha256.verify(senha_digitada, senha_hash)
+    elif senha_hash.startswith("$2a$") or senha_hash.startswith("$2b$"):
+        return bcrypt.checkpw(senha_digitada.encode(), senha_hash.encode())
+    else:
+        return False
+
 # =========================================================
 # Controle de visibilidade do "modal" (container)
 # =========================================================
@@ -409,7 +420,7 @@ if not st.session_state.get("logged_in", False):
                                         db.rollback()
                                         st.warning("Não foi possível atualizar o plano do usuário.")
 
-                                if senha_hash and pbkdf2_sha256.verify(senha_input, senha_hash):
+                                if senha_hash and verificar_senha(senha_input, senha_hash):
                                     if ativo:
                                         st.session_state.logged_in = True
                                         st.session_state.usuario = {

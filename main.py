@@ -399,7 +399,6 @@ def verificar_senha(senha_digitada, senha_hash, db=None, user_id=None):
             return pbkdf2_sha256.verify(senha_digitada, senha_hash)
         except Exception:
             return False
-        
     # bcrypt (mantém como está)
     elif senha_hash.startswith("$2a$") or senha_hash.startswith("$2b$"):
         import bcrypt
@@ -479,6 +478,9 @@ if not st.session_state.get("logged_in", False):
                                         st.warning("Não foi possível atualizar o plano do usuário.")
 
                                 # agora (passando db e id para permitir migração)
+                                st.write("DEBUG senha_input:", repr(senha_input))
+                                st.write("DEBUG senha_hash:", repr(senha_hash))
+
                                 if senha_hash and verificar_senha(senha_input, senha_hash, db=db, user_id=id):
 
                                     if ativo:

@@ -148,42 +148,12 @@ def gerar_palpite_estatistico(limite=15):
     finally:
         db.close()
 
-@st.cache_resource
-def carregar_modelo(nome_modelo="ls15"):
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-    
-    possiveis_paths = []
-    if nome_modelo.lower() == "ls15":
-        possiveis_paths = [
-            os.path.join(BASE_DIR, "modelo_ls15pp.keras"),
-            os.path.join(BASE_DIR, "modelo_ls15pp.h5"),
-            os.path.join(BASE_DIR, "modelos", "modelo_ls15pp.keras"),
-            os.path.join(BASE_DIR, "modelos", "modelo_ls15pp.h5"),
-        ]
-    elif nome_modelo.lower() == "ls14":
-        possiveis_paths = [
-            os.path.join(BASE_DIR, "modelo_ls14pp.keras"),
-            os.path.join(BASE_DIR, "modelos", "modelo_ls14pp.keras"),
-        ]
-    
-    for path in possiveis_paths:
-        if os.path.exists(path):
-            try:
-                return load_model(path, compile=False)
-            except Exception as e:
-                st.error(f"Erro ao carregar {nome_modelo.upper()} de {path}: {e}")
-                return None
 
-    st.warning(f"Modelo {nome_modelo.upper()} não encontrado. Só será possível usar modelos aleatórios/estatísticos.")
-    return None
-
-   
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 @st.cache_resource
 def carregar_modelo_ls14(path=os.path.join(BASE_DIR, "modelo_ls14pp.keras")):
     try:
-        # carregar apenas para inferência (não compilar -> evita necessidade de custom loss)
         return load_model(path, compile=False)
     except Exception as e:
         st.error(f"Erro ao carregar modelo LS14++: {e}")
@@ -191,6 +161,11 @@ def carregar_modelo_ls14(path=os.path.join(BASE_DIR, "modelo_ls14pp.keras")):
 
 @st.cache_resource
 def carregar_modelo_ls15(path=os.path.join(BASE_DIR, "modelo_ls15pp.keras")):
+    try:
+        return load_model(path, compile=False)
+    except Exception as e:
+        st.error(f"Erro ao carregar modelo LS15++: {e}")
+        return None
     try:
         return load_model(path, compile=False)
     except Exception as e:
@@ -222,7 +197,6 @@ def _calc_features_from_window(ultimos):  # ultimos = lista de jogos (cada um co
     global_vec = np.array([soma, pares], dtype=np.float32)
 
     return seq_bin, freq_vec.astype(np.float32), atraso_vec.astype(np.float32), global_vec
-
 
 def to_binary(jogo):
     b = [0] * 25

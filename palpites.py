@@ -177,12 +177,7 @@ def carregar_modelo(nome_modelo="ls15"):
     st.warning(f"Modelo {nome_modelo.upper()} não encontrado. Só será possível usar modelos aleatórios/estatísticos.")
     return None
 
-    try:
-        return load_model(path)
-    except Exception as e:
-        st.error(f"Erro ao carregar modelo LS15++: {e}")
-        return None
-
+   
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 @st.cache_resource

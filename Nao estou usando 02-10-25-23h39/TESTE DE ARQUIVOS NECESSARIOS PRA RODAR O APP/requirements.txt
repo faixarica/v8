@@ -1,0 +1,7 @@
+flask
+flask-cors
+stripe
+sqlalchemy
+psycopg2-binary
+python-dotenv
+bcrypt

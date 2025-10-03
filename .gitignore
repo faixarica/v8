@@ -1,0 +1,8 @@
+# Ignorar arquivos e pastas sensíveis
+.env
+*.csv
+__pycache__/
+*.pyc
+nao vai pro git/
+backend/
+modelo_llm_max/models/

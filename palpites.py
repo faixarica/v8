@@ -104,62 +104,22 @@ def _model_name_variants(model_name):
     variants.add(m + "_pp")
     return list(variants)
 
-
-def _model_paths_for(model_name, models_dir=None):
-    """Busca arquivos/directories candidatos para um dado model_name dentro de models_dir (recursivo).
-    É tolerante a variações de nome (ls15pp, ls_15, etc.) e procura em subpastas.
-    Retorna lista de caminhos ordenada (mais prováveis primeiro).
+def _model_paths_for(tipo: str):
     """
-    if models_dir is None:
-        models_dir = MODELS_DIR
-
-    candidates = []
-    name_variants = _model_name_variants(model_name)
-
-    # base de busca
-    search_base = models_dir if os.path.isdir(models_dir) else os.getcwd()
-
-    for root, dirs, files in os.walk(search_base):
-        # procura SavedModel (dir contendo saved_model.pb)
-        if "saved_model.pb" in files:
-            # se qualquer variante aparecer no path/base, considera candidato
-            lowroot = os.path.basename(root).lower() + " " + root.lower()
-            if any(v in lowroot for v in name_variants):
-                candidates.append(root)
-                continue
-
-        for f in files:
-            lf = f.lower()
-            if any(v in lf for v in name_variants) and lf.endswith((".keras", ".h5", ".hdf5", ".zip")):
-                p = os.path.join(root, f)
-                candidates.append(p)
-
-        for d in dirs:
-            ld = d.lower()
-            if any(v in ld for v in name_variants):
-                p = os.path.join(root, d)
-                candidates.append(p)
-
-    # padrão histórico / fallback direto na raiz
-    fallback_patterns = [f"modelo_{model_name}pp_saved", f"{model_name}_saved", f"modelo_{model_name}pp", f"{model_name}pp", model_name]
-    for pat in fallback_patterns:
-        pdir = os.path.join(search_base, pat)
-        if os.path.isdir(pdir) and pdir not in candidates:
-            candidates.append(pdir)
-        for ext in (".keras", ".h5", ".hdf5"):
-            fpath = os.path.join(search_base, pat + ext)
-            if os.path.isfile(fpath) and fpath not in candidates:
-                candidates.append(fpath)
-
-    # remover duplicados preservando ordem
-    seen = set()
-    ordered = []
-    for c in candidates:
-        if c not in seen:
-            ordered.append(c)
-            seen.add(c)
-
-    return ordered
+    Retorna apenas os modelos oficiais de produção (recent, mid, global).
+    """
+    base = os.path.join(os.getcwd(), "modelo_llm_max", "models", "prod")
+    padrões = [
+        f"recent_{tipo}pp_final.keras",
+        f"mid_{tipo}pp_final.keras",
+        f"global_{tipo}pp_final.keras"
+    ]
+    encontrados = []
+    for p in padrões:
+        caminho = os.path.join(base, p)
+        if os.path.exists(caminho):
+            encontrados.append(caminho)
+    return encontrados
 
 
 @st.cache_resource

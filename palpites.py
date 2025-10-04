@@ -106,7 +106,6 @@ def _detect_group_and_expected_from_path(p):
         return "global", 1550
     return "unknown", None
 
-
 def _ensure_window_list(ultimos_full, expected):
     """
     Garante que retorne uma lista com exatamente 'expected' jogos (cada jogo lista com 15 números).
@@ -924,7 +923,7 @@ def gerar_palpite():
         st.error(f"Erro geral ao preparar o gerador de palpites: {e}")
 
     # -------------------- [8] HISTÓRICO / VALIDAÇÃO --------------------
-    def historico_palpites():
+def historico_palpites():
     if "usuario" not in st.session_state or not st.session_state.usuario:
         st.warning("Você precisa estar logado para acessar o histórico.")
         return

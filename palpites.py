@@ -78,29 +78,32 @@ def _log_info(msg):
 # ---------------- ENSEMBLE: carregamento e predição ----------------
 # ---------- INÍCIO DO BLOCO A COLAR / SUBSTITUIR ----------
 
+# ---------------- AJUSTE PRODUÇÃO ----------------
+
+def _model_group_search_roots():
+    """
+    Produção: considera apenas ./models/prod/
+    """
+    roots = []
+    prod_path = os.path.join(MODELS_DIR, "prod")
+    if os.path.isdir(prod_path):
+        # cria subpastas virtuais "recent/mid/global" só para manter compatibilidade
+        for sub in ("recent", "mid", "global"):
+            roots.append(prod_path)
+    return roots
+
 def _detect_group_and_expected_from_path(p):
     """
-    Detecta grupo (recent/mid/global/unknown) e expected_seq_len a partir do path.
-    Mapeamento padrão:
-        recent -> 500
-        mid    -> 1000
-        global -> 1550
-    Também tenta achar números diretamente no path se aparecem (e.g. '500').
+    Detecta grupo a partir do prefixo do nome no arquivo em ./models/prod/
+    Exemplo: recent_ls15pp_final.keras → group=recent
     """
-    low = p.lower()
-    if "recent" in low:
+    low = os.path.basename(p).lower()
+    if low.startswith("recent_"):
         return "recent", 500
-    if "mid" in low:
+    if low.startswith("mid_"):
         return "mid", 1000
-    if "global" in low:
+    if low.startswith("global_"):
         return "global", 1550
-
-    m = re.search(r"\b(500|1000|1550)\b", low)
-    if m:
-        val = int(m.group(1))
-        group = {500: "recent", 1000: "mid", 1550: "global"}.get(val, "unknown")
-        return group, val
-
     return "unknown", None
 
 
@@ -150,17 +153,6 @@ def infer_expected_seq_from_loaded_model(loaded):
     except Exception:
         pass
     return None
-
-def _model_group_search_roots():
-    """
-    Retorna paths dos possíveis subfolders 'recent', 'mid', 'global' dentro de MODELS_DIR (se existirem).
-    """
-    roots = []
-    for sub in ("recent", "mid", "global"):
-        p = os.path.join(MODELS_DIR, sub)
-        if os.path.isdir(p):
-            roots.append(p)
-    return roots
 
 # Mapas de acesso por plano (ajuste conforme regras do seu negócio)
 _PLAN_TO_GROUPS = {
@@ -359,7 +351,6 @@ def carregar_ensemble_models(model_name):
         _log_info(f"{len(metas)} modelo(s) carregado(s) para '{model_name}'.")
 
     return metas
-
 
 @st.cache_resource
 def carregar_modelo_ls15_ensemble():
@@ -932,8 +923,8 @@ def gerar_palpite():
     except Exception as e:
         st.error(f"Erro geral ao preparar o gerador de palpites: {e}")
 
-# -------------------- [8] HISTÓRICO / VALIDAÇÃO --------------------
-def historico_palpites():
+    # -------------------- [8] HISTÓRICO / VALIDAÇÃO --------------------
+    def historico_palpites():
     if "usuario" not in st.session_state or not st.session_state.usuario:
         st.warning("Você precisa estar logado para acessar o histórico.")
         return

@@ -132,7 +132,9 @@ def _cached_load_ensemble_models(model_name, models_dir=None):
         models_dir = MODELS_DIR
 
     metas = []
-    candidates = _model_paths_for(model_name, models_dir=models_dir)
+    #candidates = _model_paths_for(model_name, models_dir=models_dir)
+    candidates = _model_paths_for(model_name)
+
 
     logging.info(f"[load_models] candidatos encontrados para '{model_name}': {len(candidates)} (base={models_dir})")
 
@@ -224,7 +226,9 @@ def carregar_ensemble_models(model_name, models_dir=None):
         models_dir = MODELS_DIR
     cand_count = 0
     try:
-        cand_count = len(_model_paths_for(model_name, models_dir=models_dir))
+        #cand_count = len(_model_paths_for(model_name, models_dir=models_dir))
+        cand_count = len(_model_paths_for(model_name))
+
     except Exception:
         cand_count = 0
 
@@ -301,7 +305,9 @@ def listar_candidatos_modelo(model_name, models_dir=None):
     """Função de debug/diagnóstico que escreve os caminhos candidatos encontrados."""
     if models_dir is None:
         models_dir = MODELS_DIR
-    cand = _model_paths_for(model_name, models_dir=models_dir)
+    #cand = _model_paths_for(model_name, models_dir=models_dir)
+    cand = _model_paths_for(model_name)
+
     st.write(f"🔎 Candidatos encontrados para '{model_name}' (base={models_dir}):")
     if cand:
         for c in cand:

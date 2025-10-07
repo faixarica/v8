@@ -160,11 +160,13 @@ def _dir_mtime(models_dir):
 
 def _model_paths_for(model_name: str, models_dir: str = None):
     """
-    Retorna os caminhos dos modelos (recent, mid, global) de forma
-    compatível com DEV e PROD (detecta caminho automaticamente).
+    Retorna os caminhos dos modelos (regular, mid, global) compatíveis DEV e PROD.
+    Detecta automaticamente a pasta de modelos se não informada.
     """
     # 1️⃣ Prioriza o models_dir recebido
-    if not models_dir or not os.path.exists(models_dir):
+    if models_dir and os.path.isdir(models_dir):
+        base_dir = models_dir
+    else:
         # 2️⃣ Caso não seja válido, tenta detectar caminhos padrão
         base_dir = os.path.dirname(os.path.abspath(__file__))
         candidates = [
@@ -173,33 +175,37 @@ def _model_paths_for(model_name: str, models_dir: str = None):
             os.path.join(base_dir, "models", "prod"),
             os.path.join(base_dir, "models")
         ]
-        models_dir = next((p for p in candidates if os.path.isdir(p)), candidates[-1])
+        base_dir = next((p for p in candidates if os.path.isdir(p)), None)
 
-    if not os.path.exists(models_dir):
-        logging.warning(f"[model_paths_for] models_dir inválido: {models_dir}")
+    if not base_dir or not os.path.exists(base_dir):
+        logging.warning(f"[_model_paths_for] models_dir inválido: {models_dir}")
         return []
 
+    # 3️⃣ Padrões de nomes reais do Git
     padrões = [
-        f"recent_{model_name}pp_final.keras",
+        f"regular_{model_name}pp_final.keras",
         f"mid_{model_name}pp_final.keras",
         f"global_{model_name}pp_final.keras",
-        f"{model_name}_recent.keras",
+        # opcional: outros padrões compatíveis no futuro
+        f"{model_name}_regular.keras",
         f"{model_name}_mid.keras",
         f"{model_name}_global.keras",
     ]
 
     encontrados = []
     for padrao in padrões:
-        # busca direta
-        caminho = os.path.join(models_dir, padrao)
+        caminho = os.path.join(base_dir, padrao)
         if os.path.exists(caminho):
             encontrados.append(caminho)
         else:
             # busca recursiva
-            for root, _, files in os.walk(models_dir):
+            for root, _, files in os.walk(base_dir):
                 for f in files:
                     if f.lower() == padrao.lower():
                         encontrados.append(os.path.join(root, f))
+
+    if not encontrados:
+        logging.warning(f"[_model_paths_for] Nenhum modelo encontrado em {base_dir} com os padrões: {padrões}")
 
     return encontrados
 

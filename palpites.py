@@ -161,13 +161,20 @@ def _dir_mtime(models_dir):
 def _model_paths_for(model_name: str, models_dir: str = None):
     """
     Retorna os caminhos dos modelos (regular, mid, global) compatíveis DEV e PROD.
-    Detecta automaticamente a pasta de modelos se não informada.
+    Garante que pelo menos 1 modelo de cada tipo seja retornado.
+    
+    Args:
+        model_name (str): Nome do modelo, ex: 'ls14', 'ls15'
+        models_dir (str, optional): Diretório base dos modelos. Se None, detecta automaticamente.
+    
+    Returns:
+        dict: {'regular': caminho, 'mid': caminho, 'global': caminho}
+              Cada valor é None se não encontrado.
     """
-    # 1️⃣ Prioriza o models_dir recebido
+    # 1️⃣ Detecta o diretório de modelos
     if models_dir and os.path.isdir(models_dir):
         base_dir = models_dir
     else:
-        # 2️⃣ Caso não seja válido, tenta detectar caminhos padrão
         base_dir = os.path.dirname(os.path.abspath(__file__))
         candidates = [
             os.path.join(base_dir, "modelo_llm_max", "models", "prod"),
@@ -179,34 +186,32 @@ def _model_paths_for(model_name: str, models_dir: str = None):
 
     if not base_dir or not os.path.exists(base_dir):
         logging.warning(f"[_model_paths_for] models_dir inválido: {models_dir}")
-        return []
+        return {'regular': None, 'mid': None, 'global': None}
 
-    # 3️⃣ Padrões de nomes reais do Git
-    padrões = [
-        f"regular_{model_name}pp_final.keras",
-        f"mid_{model_name}pp_final.keras",
-        f"global_{model_name}pp_final.keras",
-        # opcional: outros padrões compatíveis no futuro
-        f"{model_name}_regular.keras",
-        f"{model_name}_mid.keras",
-        f"{model_name}_global.keras",
-    ]
+    # 2️⃣ Padrões de nomes reais do Git
+    tipos = ['regular', 'mid', 'global']
+    encontrados = {t: None for t in tipos}
 
-    encontrados = []
-    for padrao in padrões:
-        caminho = os.path.join(base_dir, padrao)
-        if os.path.exists(caminho):
-            encontrados.append(caminho)
+    # 3️⃣ Busca recursiva e garante pelo menos 1 modelo de cada tipo
+    for tipo in tipos:
+        padrao = f"{tipo}_{model_name}pp_final.keras"
+        caminho_exato = os.path.join(base_dir, padrao)
+        if os.path.exists(caminho_exato):
+            encontrados[tipo] = caminho_exato
         else:
             # busca recursiva
             for root, _, files in os.walk(base_dir):
                 for f in files:
                     if f.lower() == padrao.lower():
-                        encontrados.append(os.path.join(root, f))
+                        encontrados[tipo] = os.path.join(root, f)
+                        break
+                if encontrados[tipo]:
+                    break  # já achou, não precisa continuar
 
-    if not encontrados:
-        logging.warning(f"[_model_paths_for] Nenhum modelo encontrado em {base_dir} com os padrões: {padrões}")
+        if not encontrados[tipo]:
+            logging.warning(f"[_model_paths_for] Modelo {tipo} não encontrado para {model_name} em {base_dir}")
 
+    logging.info(f"[_model_paths_for] Modelos encontrados para {model_name}: {encontrados}")
     return encontrados
 
 

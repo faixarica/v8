@@ -158,63 +158,6 @@ def _dir_mtime(models_dir):
     except Exception:
         return 0.0
 
-def _model_paths_for(model_name: str, models_dir: str = None):
-    """
-    Retorna os caminhos dos modelos (regular, mid, global) compatíveis DEV e PROD.
-    Garante que pelo menos 1 modelo de cada tipo seja retornado.
-    
-    Args:
-        model_name (str): Nome do modelo, ex: 'ls14', 'ls15'
-        models_dir (str, optional): Diretório base dos modelos. Se None, detecta automaticamente.
-    
-    Returns:
-        dict: {'regular': caminho, 'mid': caminho, 'global': caminho}
-              Cada valor é None se não encontrado.
-    """
-    # 1️⃣ Detecta o diretório de modelos
-    if models_dir and os.path.isdir(models_dir):
-        base_dir = models_dir
-    else:
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        candidates = [
-            os.path.join(base_dir, "modelo_llm_max", "models", "prod"),
-            os.path.join(base_dir, "modelo_llm_max", "models"),
-            os.path.join(base_dir, "models", "prod"),
-            os.path.join(base_dir, "models")
-        ]
-        base_dir = next((p for p in candidates if os.path.isdir(p)), None)
-
-    if not base_dir or not os.path.exists(base_dir):
-        logging.warning(f"[_model_paths_for] models_dir inválido: {models_dir}")
-        return {'regular': None, 'mid': None, 'global': None}
-
-    # 2️⃣ Padrões de nomes reais do Git
-    tipos = ['regular', 'mid', 'global']
-    encontrados = {t: None for t in tipos}
-
-    # 3️⃣ Busca recursiva e garante pelo menos 1 modelo de cada tipo
-    for tipo in tipos:
-        padrao = f"{tipo}_{model_name}pp_final.keras"
-        caminho_exato = os.path.join(base_dir, padrao)
-        if os.path.exists(caminho_exato):
-            encontrados[tipo] = caminho_exato
-        else:
-            # busca recursiva
-            for root, _, files in os.walk(base_dir):
-                for f in files:
-                    if f.lower() == padrao.lower():
-                        encontrados[tipo] = os.path.join(root, f)
-                        break
-                if encontrados[tipo]:
-                    break  # já achou, não precisa continuar
-
-        if not encontrados[tipo]:
-            logging.warning(f"[_model_paths_for] Modelo {tipo} não encontrado para {model_name} em {base_dir}")
-
-    logging.info(f"[_model_paths_for] Modelos encontrados para {model_name}: {encontrados}")
-    return encontrados
-
-
 @st.cache_resource
 def _cached_load_ensemble_models(model_name: str, models_dir: str, dir_mtime: float):
     """
@@ -359,7 +302,6 @@ def listar_candidatos_modelo(model_name, models_dir=None):
         st.write(" (nenhum candidato encontrado)")
     return cand
 
-
 def verificar_modelos(models_dir=None):
     """Chamada via UI para diagnosticar pasta e arquivos de modelos."""
     _lazy_imports()
@@ -388,7 +330,6 @@ def _ensure_window_list(ultimos_full, expected):
     pad_count = expected - cur
     pad = [ultimos_full[0]] * pad_count
     return pad + ultimos_full
-
 
 def infer_model_input_shape(loaded):
     """
@@ -496,7 +437,6 @@ def _prepare_inputs_for_model_meta(meta, ultimos_full):
         arr = arr[:, :14] if arr.shape[1] >= 14 else arr
         return np.expand_dims(arr[-50:], axis=0)
 
-
 def ensemble_predict(models_list, X_inputs):
     if not models_list:
         raise ValueError("Nenhum modelo carregado para ensemble.")
@@ -527,20 +467,17 @@ def ensemble_predict(models_list, X_inputs):
     mean_pred = np.mean(preds, axis=0)
     return mean_pred
 
-
 # -------------------- FEATURES / GERADORES SIMPLES --------------------
 
 def montar_entrada_binaria(ultimos_concursos):
     arr = np.array([[1.0 if (i+1) in jogo else 0.0 for i in range(25)] for jogo in ultimos_concursos], dtype=np.float32)
     return arr
 
-
 def apply_temperature(p, T=1.0):
     p = np.clip(p, 1e-12, 1.0)
     logits = np.log(p)
     scaled = np.exp(logits / float(T))
     return scaled / scaled.sum()
-
 
 def gerar_palpite_from_probs(probs, limite=15, reinforce_threshold=0.06, boost_factor=2.0, temperature=1.0, deterministic=False):
     p = apply_temperature(probs, temperature)
@@ -704,6 +641,83 @@ def gerar_palpite_estatistico(limite=15):
 
 # -------------------- GERADORES ML (LS15 / LS14) --------------------
 
+def _model_paths_for(model_name: str, models_dir: str = None):
+    """
+    Retorna lista de caminhos de modelos (regular, mid, global) para LS14/LS15.
+    Funciona tanto em DEV quanto em PROD.
+    """
+    if models_dir and os.path.isdir(models_dir):
+        base_dir = models_dir
+    else:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        candidates = [
+            os.path.join(base_dir, "modelo_llm_max", "models", "prod"),
+            os.path.join(base_dir, "modelo_llm_max", "models"),
+            os.path.join(base_dir, "models", "prod"),
+            os.path.join(base_dir, "models")
+        ]
+        base_dir = next((p for p in candidates if os.path.isdir(p)), None)
+
+    if not base_dir:
+        logging.warning(f"[_model_paths_for] models_dir inválido: {models_dir}")
+        return []
+
+    tipos = ['regular', 'mid', 'global']
+    encontrados = []
+
+    for tipo in tipos:
+        padrao = f"{tipo}_{model_name}pp_final.keras"
+        # busca direta
+        caminho = os.path.join(base_dir, padrao)
+        if os.path.exists(caminho):
+            encontrados.append(caminho)
+        else:
+            # busca recursiva
+            for root, _, files in os.walk(base_dir):
+                for f in files:
+                    if f.lower() == padrao.lower():
+                        encontrados.append(os.path.join(root, f))
+                        break
+                if encontrados and encontrados[-1].lower().endswith(padrao.lower()):
+                    break
+
+    logging.info(f"[_model_paths_for] Modelos encontrados para {model_name}: {encontrados}")
+    return encontrados
+
+def carregar_modelo_ls(model_name: str, nome_plano=None, models_dir=None):
+    """
+    Carrega todos os modelos disponíveis para LS14/LS15.
+    Não ignora modelos por tamanho da saída.
+    Retorna lista de dicts com 'model', 'path', 'expected_seq_len', 'tipo'.
+    """
+    caminhos = _model_paths_for(model_name, models_dir=models_dir)
+    metas = []
+
+    for path in caminhos:
+        try:
+            model_obj = tf.keras.models.load_model(path)
+            output_shape = getattr(model_obj, 'output_shape', None)
+            expected_seq_len = output_shape[-1] if isinstance(output_shape, (tuple, list)) else None
+            tipo = os.path.basename(path).split("_")[0]  # regular/mid/global
+
+            metas.append({
+                "model": model_obj,
+                "path": path,
+                "tipo": tipo,
+                "expected_seq_len": expected_seq_len
+            })
+
+            logging.info(f"[carregar_modelo_ls] Carregado: {path} (shape={expected_seq_len})")
+
+        except Exception as e:
+            logging.warning(f"[carregar_modelo_ls] Falha ao carregar {path}: {e}")
+            continue
+
+    if not metas:
+        logging.warning(f"[carregar_modelo_ls] Nenhum modelo carregado para {model_name} (plano={nome_plano})")
+    return metas
+
+
 def _load_and_filter_metas_for_plan(model_name, nome_plano, models_dir=None):
     metas = carregar_ensemble_models(model_name, models_dir=models_dir)
     if not metas:
@@ -711,7 +725,6 @@ def _load_and_filter_metas_for_plan(model_name, nome_plano, models_dir=None):
     allowed_groups = _groups_allowed_for_plan(nome_plano)
     filtered = [m for m in metas if m.get("group") in allowed_groups or m.get("group") == "unknown"]
     return filtered
-
 
 def gerar_palpite_ls15(limite=15, models_dir=None):
     nome_plano = st.session_state.usuario.get('nome_plano') if 'usuario' in st.session_state and st.session_state.usuario else None
@@ -795,7 +808,6 @@ def gerar_palpite_ls14(limite=14, models_dir=None):
     else:
         st.warning("Nenhum palpite LS14 foi gerado.")
         return []
-
 
 def historico_palpites():
     import datetime as dt
@@ -967,25 +979,7 @@ def validar_palpite():
         finally:
             db.close()
 
-def carregar_modelo_ls(modelo: str, nome_plano: str, models_dir=None):
-    """
-    Carrega os modelos LS14 ou LS15 disponíveis para o plano do usuário.
-    """
-    if not nome_plano:
-        return []
-
-    planos_acesso = {
-        "ls14": ["silver", "gold"],
-        "ls15": ["gold"]
-    }
-
-    if nome_plano.strip().lower() not in planos_acesso.get(modelo.lower(), []):
-        return []
-
-    metas = _load_and_filter_metas_for_plan(modelo.lower(), nome_plano, models_dir=models_dir)
-    return metas
-
-def gerar_palpite_ls(modelo: str, limite=15, n_palites=1, nome_plano=None, models_dir=None):
+ def gerar_palpite_ls(modelo: str, limite=15, n_palites=1, nome_plano=None, models_dir=None):
     """
     Gera n_palites para LS14 ou LS15.
     - aceita apenas modelos que retornem vetores de predição com 25 elementos (1..25)
@@ -1114,45 +1108,51 @@ def gerar_palpite_ls(modelo: str, limite=15, n_palites=1, nome_plano=None, model
 
     return palpites
 
-
 # -------------------- UI / CORE - GENERATION --------------------
 def gerar_palpite_ui():
-    import random
     st.title("Gerar Bets")
-    _lazy_imports()
+    _lazy_imports()  # importa módulos pesados sob demanda
 
+    # Verifica login
     if 'usuario' not in st.session_state or st.session_state.usuario is None:
         st.error("Você precisa estar logado para gerar Bets.")
         return
 
-    id_usuario = st.session_state.usuario["id"]
-    # Antes de gerar palpites
+    id_usuario = st.session_state.usuario.get("id")
     nome_plano = st.session_state.usuario.get("nome_plano")
+
+    # Busca plano do banco se não estiver no session_state
     if not nome_plano:
-        # tenta buscar do banco
         db = Session()
         try:
-            result = db.execute(text("SELECT nome FROM planos WHERE id = :id_plano"), 
-                                {"id_plano": st.session_state.usuario.get("id_plano", 0)})
+            result = db.execute(
+                text("SELECT nome FROM planos WHERE id = :id_plano"),
+                {"id_plano": st.session_state.usuario.get("id_plano", 0)}
+            )
             row = result.fetchone()
             nome_plano = row[0] if row else None
         except Exception as e:
             st.error(f"Erro ao obter nome do plano: {e}")
+            logging.error(f"[gerar_palpite_ui] Erro ao buscar plano do usuário: {e}")
             return
         finally:
             db.close()
 
     if not nome_plano:
         st.error("Plano do usuário não encontrado. Contate o suporte.")
+        logging.warning("[gerar_palpite_ui] Plano do usuário não encontrado")
         return
 
     st.markdown(f"<div>Plano atual: <strong>{nome_plano}</strong></div>", unsafe_allow_html=True)
+
+    # Verifica limite de palpites
     permitido, nome_plano_verif, palpites_restantes = verificar_limite_palpites(id_usuario)
     if not permitido:
         st.error(f"Você atingiu o limite de palpites do Plano {nome_plano_verif} para este mês.")
+        logging.info(f"[gerar_palpite_ui] Limite de palpites atingido para usuário {id_usuario}")
         return
 
-    # Define modelos por plano
+    # Define modelos e limites de dezenas por plano
     plano_clean = nome_plano.lower()
     if plano_clean == "free":
         modelos_disponiveis = ["Aleatório"]
@@ -1168,62 +1168,91 @@ def gerar_palpite_ui():
         min_dezenas, max_dezenas = 15, 15
 
     modelo = st.selectbox("Modelo de Geração:", modelos_disponiveis, key="select_modelo")
-    qtde_dezenas = st.number_input("Quantas dezenas por palpite?", min_value=min_dezenas, max_value=max_dezenas,
-                                   value=min_dezenas, step=1, key="qtde_dezenas")
-    num_palpites = st.number_input("Quantos palpites deseja gerar?", min_value=1,
-                                   max_value=max(1, palpites_restantes),
-                                   value=1, step=1, key="num_palpites")
+    qtde_dezenas = st.number_input(
+        "Quantas dezenas por palpite?",
+        min_value=min_dezenas, max_value=max_dezenas,
+        value=min_dezenas, step=1, key="qtde_dezenas"
+    )
+    num_palpites = st.number_input(
+        "Quantos palpites deseja gerar?",
+        min_value=1, max_value=max(1, palpites_restantes),
+        value=1, step=1, key="num_palpites"
+    )
 
-    if st.button("Gerar Palpites", key="btn_gerar_palpites_ui"):
-        palpites_gerados = []
-        tentativas = set()
+    if not st.button("Gerar Palpites", key="btn_gerar_palpites_ui"):
+        return
 
-        # LS14 predição para priorizar LS15
-        ls14_prior = []
-        if plano_clean == "gold" and modelo == "LS15":
-            ls14_prior = gerar_palpite_ls("ls14", limite=15, n_palites=1, nome_plano=nome_plano, models_dir=MODELS_DIR)
-            ls14_prior = ls14_prior[0] if ls14_prior else []
+    palpites_gerados = []
+    tentativas = set()
 
-        for _ in range(num_palpites):
-            try:
-                if modelo == "Aleatório":
-                    palpite = sorted(random.sample(range(1, 26), qtde_dezenas))
-                elif modelo == "Estatístico":
-                    palpite = gerar_palpite_estatistico(limite=qtde_dezenas)
-                elif modelo == "Pares/Ímpares":
-                    palpite = gerar_palpite_pares_impares(limite=qtde_dezenas)
-                elif modelo == "LS14":
-                    palpite = gerar_palpite_ls("ls14", limite=qtde_dezenas, n_palites=1,
-                                               nome_plano=nome_plano, models_dir=MODELS_DIR)[0]
-                elif modelo == "LS15":
-                    palpite = gerar_palpite_ls("ls15", limite=qtde_dezenas, n_palites=1,
-                                               nome_plano=nome_plano, models_dir=MODELS_DIR)[0]
-                    # prioriza LS14 para Gold
-                    if ls14_prior:
-                        intersec = list(set(palpite) & set(ls14_prior))
-                        extras = [x for x in ls14_prior if x not in intersec]
-                        for x in extras:
-                            if len(intersec) < qtde_dezenas:
-                                intersec.append(x)
-                        for x in range(1, 26):
-                            if len(intersec) < qtde_dezenas and x not in intersec:
-                                intersec.append(x)
-                        palpite = sorted(intersec[:qtde_dezenas])
+    # LS14 predição para priorizar LS15
+    ls14_prior = []
+    if plano_clean == "gold" and modelo == "LS15":
+        ls14_prior_list = gerar_palpite_ls(
+            "ls14", limite=15, n_palites=1, nome_plano=nome_plano, models_dir=MODELS_DIR
+        )
+        ls14_prior = ls14_prior_list[0] if ls14_prior_list and len(ls14_prior_list) > 0 else []
+        logging.info(f"[gerar_palpite_ui] LS14_prior: {ls14_prior}")
 
-                # adiciona palpite único
-                tpl = tuple(palpite)
-                if tpl not in tentativas:
-                    tentativas.add(tpl)
-                    salvar_palpite(palpite, modelo)
-                    atualizar_contador_palpites(id_usuario)
-                    palpites_gerados.append(palpite)
+    # Loop de geração de palpites
+    for _ in range(num_palpites):
+        try:
+            if modelo == "Aleatório":
+                palpite = sorted(random.sample(range(1, 26), qtde_dezenas))
+            elif modelo == "Estatístico":
+                palpite = gerar_palpite_estatistico(limite=qtde_dezenas)
+            elif modelo == "Pares/Ímpares":
+                palpite = gerar_palpite_pares_impares(limite=qtde_dezenas)
+            elif modelo == "LS14":
+                palpite_list = gerar_palpite_ls(
+                    "ls14", limite=qtde_dezenas, n_palites=1,
+                    nome_plano=nome_plano, models_dir=MODELS_DIR
+                )
+                palpite = palpite_list[0] if palpite_list and len(palpite_list) > 0 else sorted(random.sample(range(1, 26), qtde_dezenas))
+                if not palpite_list:
+                    logging.warning("[gerar_palpite_ui] Fallback LS14 aplicado")
+            elif modelo == "LS15":
+                palpite_list = gerar_palpite_ls(
+                    "ls15", limite=qtde_dezenas, n_palites=1,
+                    nome_plano=nome_plano, models_dir=MODELS_DIR
+                )
+                palpite = palpite_list[0] if palpite_list and len(palpite_list) > 0 else sorted(random.sample(range(1, 26), qtde_dezenas))
+                if not palpite_list:
+                    logging.warning("[gerar_palpite_ui] Fallback LS15 aplicado")
 
-            except Exception as e:
-                st.error(f"Erro ao gerar palpite: {e}")
+                # prioriza LS14 para Gold
+                if ls14_prior:
+                    intersec = list(set(palpite) & set(ls14_prior))
+                    extras = [x for x in ls14_prior if x not in intersec]
+                    for x in extras:
+                        if len(intersec) < qtde_dezenas:
+                            intersec.append(x)
+                    for x in range(1, 26):
+                        if len(intersec) < qtde_dezenas and x not in intersec:
+                            intersec.append(x)
+                    palpite = sorted(intersec[:qtde_dezenas])
 
-        if palpites_gerados:
-            st.success(f"{len(palpites_gerados)} palpite(s) gerado(s) com sucesso:")
-            for p in palpites_gerados:
-                st.write(", ".join(map(str, p)))
-        else:
-            st.warning("Nenhum palpite foi gerado.")
+            # adiciona palpite único
+            tpl = tuple(palpite)
+            if tpl not in tentativas:
+                tentativas.add(tpl)
+                salvar_palpite(palpite, modelo)
+                atualizar_contador_palpites(id_usuario)
+                palpites_gerados.append(palpite)
+                logging.info(f"[gerar_palpite_ui] Palpite gerado: {palpite}")
+
+        except Exception as e:
+            st.error(f"Erro ao gerar palpite: {e}")
+            logging.error(f"[gerar_palpite_ui] Erro ao gerar palpite: {e}")
+
+    # Exibe resultados
+    if palpites_gerados:
+        st.success(f"{len(palpites_gerados)} palpite(s) gerado(s) com sucesso:")
+        for p in palpites_gerados:
+            st.write(", ".join(map(str, p)))
+    else:
+        st.warning("Nenhum palpite foi gerado.")
+        logging.warning("[gerar_palpite_ui] Nenhum palpite gerado após todas tentativas")
+        
+
+

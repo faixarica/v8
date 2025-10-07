@@ -1,14 +1,10 @@
 # main v8.004
 # -------------------- [1] IMPORTS --------------------
 
-import os
-import secrets
+import os,secrets,smtplib, requests,base64
 import streamlit as st
-import smtplib
 import streamlit.components.v1 as components
-import requests
 import pandas as pds
-import base64
 import hashlib
 
 from passlib.hash import pbkdf2_sha256
@@ -18,12 +14,11 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from db import Session
 from dashboard import mostrar_dashboard
-from palpites import gerar_palpite, historico_palpites, validar_palpite
+from palpites import gerar_palpite_ui, historico_palpites, validar_palpite
 from auth import logout
 from perfil import editar_perfil
 from financeiro import exibir_aba_financeiro
 
-from passlib.hash import pbkdf2_sha256
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 # -------------------- [2] CONFIGS --------------------
@@ -46,7 +41,6 @@ st.markdown("""
         </div>
     </div>
 """, unsafe_allow_html=True)
-
 
 # -------------------- [3] DEFINIÇÃO DE FUNÇÕES --------------------
 
@@ -422,7 +416,6 @@ def verificar_senha(senha_digitada, senha_hash, db=None, user_id=None):
     return False
 
 
-#============= começo
 # =========================================================
 # Login
 # =========================================================
@@ -766,13 +759,48 @@ if st.session_state.get("logged_in", False):
     except Exception as e:
         print(f"[ERRO] Problema ao imprimir a senha: {e}")
 
-    opcao_selecionada = st.sidebar.radio("Menu", ["Painel Estatístico", "Gerar Novas Bets", "Histórico", "Validar Bets Gerada", "Assinatura ", "Editar Perfil", "Sair"])
+   
+   
+    # --- MENU PRINCIPAL COM SUPORTE AO ADMIN ---
+    tipo_user = st.session_state.usuario.get("tipo", "").upper()
 
+    # Se for administrador, mostra menu especial
+    if tipo_user in ["A", "ADM", "ADMIN"]:
+        st.sidebar.markdown("### ⚙️ Painel Administrativo")
+        opcao_selecionada = st.sidebar.radio(
+            "Menu",
+            [
+                "Painel Estatístico",
+                "Gerar Novas Bets",
+                "Histórico",
+                "Validar Bets Gerada",
+                "Assinatura ",
+                "Editar Perfil",
+                "Usuários",
+                "Notificar",
+                "Resultados",
+                "Evolução",
+                "Sair"
+            ]
+        )
+    else:
+        opcao_selecionada = st.sidebar.radio(
+            "Menu",
+            [
+                "Painel Estatístico",
+                "Gerar Novas Bets",
+                "Histórico",
+                "Validar Bets Gerada",
+                "Assinatura ",
+                "Editar Perfil",
+                "Sair"
+            ]
+        )
+
+    # --- LÓGICA DE ROTEAMENTO DAS OPÇÕES ---
     if opcao_selecionada == "Painel Estatístico":
         mostrar_dashboard()
-        # Exibe métricas de palpites do usuário logado
         dia, semana, mes = calcular_palpites_periodo(st.session_state.usuario["id"])
-
         st.markdown("---")
 
         # Layout em 3 colunas
@@ -802,32 +830,41 @@ if st.session_state.get("logged_in", False):
             </div>
             """, unsafe_allow_html=True)
 
-        
     elif opcao_selecionada == "Gerar Novas Bets":
-        gerar_palpite()
-        
+        gerar_palpite_ui()
+
     elif opcao_selecionada == "Histórico":
         historico_palpites()
-        
-    elif opcao_selecionada == "Validar Bets Gerada":
-        validar_palpite()
-        
-    elif opcao_selecionada == "Assinatura ":
-        st.subheader("Assinatura ") # Título da seção
-        exibir_aba_financeiro()
-        
-    elif opcao_selecionada == "Editar Perfil":
-        st.subheader("Editar") # Título da seção
-        editar_perfil()
-        
-    elif opcao_selecionada == "Sair":
-        logout() # Deve limpar a sessão e fazer st.rerun()
 
-    # Rodapé da sidebar
-else:
-    # Opcional: Mensagem se, por algum motivo, este código rodar sem o usuário estar logado
-    #st.warning("Você precisa estar logado para acessar o menu.")
-    # Mova esta função inteira para antes da linha 339 (if opcao_selecionada == "Dashboard":)
-   
+    elif opcao_selecionada == "Validar Bets Gerada":
+        validar_palpite()
+
+    elif opcao_selecionada == "Assinatura ":
+        exibir_aba_financeiro()
+
+    elif opcao_selecionada == "Editar Perfil":
+        editar_perfil()
+
+    # --- NOVAS FUNÇÕES ADMIN ---
+    elif opcao_selecionada == "Usuários":
+        from admin.usuarios import listar_usuarios
+        listar_usuarios()
+
+    elif opcao_selecionada == "Notificar":
+        from admin.notificacoes import enviar_notificacoes_acertos
+        enviar_notificacoes_acertos()
+
+    elif opcao_selecionada == "Resultados":
+        import resultados
+        resultados.importar_resultado()
+
+    elif opcao_selecionada == "Evolução":
+        import verificar_palpites
+        verificar_palpites.executar_verificacao()
+
+    elif opcao_selecionada == "Sair":
+        logout()
+
+
 # --- FIM DO BLOCO DE LOGIN / CADASTRO ---
-    st.sidebar.markdown("<div style='text-align:left; color:green; font-size:16px;'>fAIxaBet v8.04</div>", unsafe_allow_html=True)
+    st.sidebar.markdown("<div style='text-align:left; color:green; font-size:16px;'>fAIxaBet v8.05</div>", unsafe_allow_html=True)

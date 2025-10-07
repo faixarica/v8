@@ -717,7 +717,6 @@ def carregar_modelo_ls(model_name: str, nome_plano=None, models_dir=None):
         logging.warning(f"[carregar_modelo_ls] Nenhum modelo carregado para {model_name} (plano={nome_plano})")
     return metas
 
-
 def _load_and_filter_metas_for_plan(model_name, nome_plano, models_dir=None):
     metas = carregar_ensemble_models(model_name, models_dir=models_dir)
     if not metas:
@@ -979,7 +978,7 @@ def validar_palpite():
         finally:
             db.close()
 
- def gerar_palpite_ls(modelo: str, limite=15, n_palites=1, nome_plano=None, models_dir=None):
+def gerar_palpite_ls(modelo: str, limite=15, n_palites=1, nome_plano=None, models_dir=None):
     """
     Gera n_palites para LS14 ou LS15.
     - aceita apenas modelos que retornem vetores de predição com 25 elementos (1..25)
@@ -1253,6 +1252,4 @@ def gerar_palpite_ui():
     else:
         st.warning("Nenhum palpite foi gerado.")
         logging.warning("[gerar_palpite_ui] Nenhum palpite gerado após todas tentativas")
-        
-
 

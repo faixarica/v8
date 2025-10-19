@@ -420,13 +420,13 @@ def verificar_senha(senha_digitada, senha_hash, db=None, user_id=None):
 # Login
 # =========================================================
 if not st.session_state.get("logged_in", False):
-    st.markdown("## Acesso ao Sistema")
-    aba = st.radio("Ação", ["Entrar"], horizontal=True, label_visibility="collapsed")
-    #     aba = st.radio("Ação", ["Entrar", "Cadastro"], horizontal=True, label_visibility="collapsed")
+    st.markdown("## LOGIN")
+    aba = st.radio("Ação", ["Conectar"], horizontal=True, label_visibility="collapsed")
+    #     aba = st.radio("Ação", ["Conectar", "Cadastro"], horizontal=True, label_visibility="collapsed")
 
     st.write("")
 
-    if aba == "Entrar":
+    if aba == "Conectar":
         # Inicializar estados para o fluxo de recuperação
         if "recover_step" not in st.session_state:
             st.session_state.recover_step = 0  # 0 = login normal, 1 = recuperar email, 2 = redefinir senha
@@ -437,7 +437,7 @@ if not st.session_state.get("logged_in", False):
             with st.form("login_form"):
                 usuario_input = st.text_input("Usuário")
                 senha_input = st.text_input("Senha", type="password")
-                submitted = st.form_submit_button("Entrar")
+                submitted = st.form_submit_button("Conectar")
                 
                 if submitted:
                     db = Session()

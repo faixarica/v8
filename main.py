@@ -421,7 +421,9 @@ def verificar_senha(senha_digitada, senha_hash, db=None, user_id=None):
 # =========================================================
 if not st.session_state.get("logged_in", False):
     st.markdown("## Acesso ao Sistema")
-    aba = st.radio("Ação", ["Entrar", "Cadastro"], horizontal=True, label_visibility="collapsed")
+    aba = st.radio("Ação", ["Entrar"], horizontal=True, label_visibility="collapsed")
+    #     aba = st.radio("Ação", ["Entrar", "Cadastro"], horizontal=True, label_visibility="collapsed")
+
     st.write("")
 
     if aba == "Entrar":
@@ -613,7 +615,7 @@ if not st.session_state.get("logged_in", False):
                     st.rerun()
 
     elif aba == "Cadastro":
-        st.info("⚠️ Tela de cadastro ainda não implementada.")
+       # st.info("⚠️ Tela de cadastro ainda não implementada.")
         
         hoje = date.today()
         idade_minima = 18

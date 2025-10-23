@@ -11,14 +11,11 @@ import streamlit as st
 from sqlalchemy import text
 from db import Session
 
-
 from sqlalchemy.orm import sessionmaker
 # CSS personalizado
 # -------------------- [2] CONFIGS --------------------
 
-
 # -------------------- [3] DEFINIÇÃO DE FUNÇÕES --------------------
-
 
 def apply_custom_css():
     st.markdown("""
@@ -81,7 +78,7 @@ def grafico_frequencia_palpites():
 
 def mostrar_dashboard():
     apply_custom_css()
-    st.title("📊 Painel Estatístico")
+    st.title("Painel Estatístico")
 
     usuario = st.session_state.get("usuario", {})
     if not usuario:

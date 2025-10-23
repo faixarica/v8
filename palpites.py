@@ -1,75 +1,372 @@
 # -*- coding: utf-8 -*-
 """
-palpites_fixed.py  -- substitua seu palpites.py por este (backup antes).
-Correções:
-- busca recursiva flexível de modelos (arquivos .keras/.h5/dir SavedModel)
-- aceita parâmetro models_dir em todas as funções relevantes
-- cache que invalida quando a pasta de modelos muda (usa mtime)
-- mensagens de diagnóstico claras (verificar_modelos)
-- correções de assinaturas inconsistentes
+palpites_v8.006n.py
+Consolidado e funcional — compatível com Streamlit e PostgreSQL.
+Inclui:
+- geração de palpites (estatístico, pares/ímpares, LS14, LS15)
+- controle de limites por plano (via tabela planos)
+- gravação dinâmica no banco (detecta colunas reais)
+- histórico e validação independentes
 """
-# ADIE imports pesados
-import os, sys, logging, random
-import streamlit as st
-from datetime import datetime
-from sqlalchemy import text
-from db import Session
-
-# Import leve
+import streamlit.components.v1 as components
+import random
+import os, random, logging, json
 import numpy as np
-
 import streamlit as st
 from sqlalchemy import text
+from datetime import datetime, timedelta
+from db import Session
+import math
+import re
+# =========================
+# CONFIG LOG
+# =========================
+DEBUG_MODE = os.environ.get("DEBUG_MODE", "0") == "1"
+logging.basicConfig(
+    level=logging.DEBUG if DEBUG_MODE else logging.INFO,
+    format="%(asctime)s %(levelname)s: %(message)s",
+)
 
-# tensorflow (carregamento)
-import time
-_t0 = time.time()
+def _safe_rerun():
+    """Rerun compatível com versões novas e antigas do Streamlit."""
+    try:
+        st.rerun()  # Streamlit ≥ 1.27
+    except AttributeError:
+        # Streamlit mais antigo
+        _safe_rerun()
+        
 
-from tensorflow.keras.models import load_model as tf_load_model
-import tensorflow as tf
-from tensorflow import keras as tf_keras
-print("Tempo para importar TF:", time.time() - _t0)
+def _log_info(msg):
+    logging.info(msg)
+    if DEBUG_MODE:
+        st.info(msg)
 
-# util do projeto (se existir)
-from modelo_llm_max.utils_ls_models import to_binary
+def _log_warn(msg):
+    logging.warning(msg)
+    if DEBUG_MODE:
+        st.warning(msg)
+
+# =========================
+# FUNÇÕES AUXILIARES
+# =========================
+def _existing_cols(table_name: str) -> set:
+    """Retorna o conjunto de nomes de colunas existentes."""
+    db = Session()
+    try:
+        rows = db.execute(text("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = :t
+        """), {"t": table_name}).fetchall()
+        return {r[0] for r in rows} if rows else set()
+    except Exception as e:
+        _log_warn(f"Erro ao buscar colunas da tabela {table_name}: {e}")
+        return set()
+    finally:
+        db.close()
 
 
-# adia tensorflow/keras para dentro da função
+# =========================
+# GERAÇÃO ESTATÍSTICA
+# =========================
+def gerar_palpite_estatistico_paridade(limite=15):
+    """Gera palpites equilibrando pares e ímpares."""
+    pares = [n for n in range(1, 26) if n % 2 == 0]
+    impares = [n for n in range(1, 26) if n % 2 == 1]
+    random.shuffle(pares)
+    random.shuffle(impares)
+    qtd_pares = limite // 2
+    qtd_impares = limite - qtd_pares
+    dezenas = sorted(pares[:qtd_pares] + impares[:qtd_impares])
+    return dezenas
+
+def gerar_palpite_aleatorio(limite=15):
+    dezenas = random.sample(range(1, 26), limite)
+    return sorted(dezenas)
+
+# ================================================================
+# BLOCO FINAL: SALVAR PALPITE COM TELEMETRIA (meta JSON)
+# ================================================================
+import json, os
+from datetime import datetime
+
+# ================================================================
+# SALVAR PALPITE — versão final (coluna 'numeros' padrão oficial)
+# ================================================================
+def salvar_palpite(palpite, modelo, extras_meta=None):
+    """
+    Salva palpite no banco (PostgreSQL/Neon), usando 'numeros' como coluna principal.
+    Retorna o ID do palpite inserido.
+    """
+    usuario = st.session_state.get("usuario", {}) if 'usuario' in st.session_state else {}
+    id_usuario = usuario.get("id")
+    if not id_usuario:
+        _log_warn("Usuário não logado — não é possível salvar palpite.")
+        return None
+
+    dezenas_txt = ",".join(f"{int(d):02d}" for d in palpite)
+    cols = _existing_cols("palpites")
+    if not cols:
+        _log_warn("Tabela palpites não encontrada.")
+        return None
+
+    # --- [1] Coluna principal ---
+    if "numeros" in cols:
+        num_col = "numeros"
+    elif "dezenas" in cols:
+        num_col = "dezenas"
+    elif "palpite" in cols:
+        num_col = "palpite"
+    elif "jogada" in cols:
+        num_col = "jogada"
+    else:
+        _log_warn("Nenhuma coluna de dezenas encontrada.")
+        return None
+
+    ts_col = next((c for c in ("created_at", "criado_em", "data") if c in cols), None)
+    defaults_map = {"status": "N", "ativo": True, "validado": False}
+    extras = {c: defaults_map[c] for c in cols if c in defaults_map}
+
+    # --- [2] Monta meta JSON ---
+    meta_payload = {}
+    if "meta" in cols:
+        try:
+            meta_payload = {
+                "modelo": modelo,
+                "usuario_id": id_usuario,
+                "timestamp": datetime.now().isoformat(),
+                "config": {
+                    "temperature": os.getenv("ENSEMBLE_TEMPERATURE", "1.0"),
+                    "ensemble_weights": os.getenv("ENSEMBLE_WEIGHTS", "recent:0.5,mid:0.3,global:0.2"),
+                    "use_gumbel": os.getenv("USE_GUMBEL", "0"),
+                    "use_soft_constraints": os.getenv("USE_SOFT_CONSTRAINTS", "0"),
+                },
+                "palpite": palpite,
+            }
+            if extras_meta and isinstance(extras_meta, dict):
+                meta_payload.update(extras_meta)
+        except Exception as e:
+            _log_warn(f"Erro ao montar meta JSON: {e}")
+
+    # --- [3] SQL dinâmico ---
+    db = Session()
+    new_id = None
+    try:
+        base_cols = ["id_usuario", "modelo", num_col]
+        params = {"id_usuario": id_usuario, "modelo": modelo, num_col: dezenas_txt}
+
+        if ts_col:
+            base_cols.append(ts_col)
+        for k, v in extras.items():
+            if k not in base_cols:
+                base_cols.append(k)
+                params[k] = v
+
+        if "meta" in cols:
+            base_cols.append("meta")
+            params["meta"] = json.dumps(meta_payload, ensure_ascii=False)
+
+        placeholders = [("NOW()" if c == ts_col else f":{c}") for c in base_cols]
+        sql = f"""
+            INSERT INTO palpites ({', '.join(base_cols)})
+            VALUES ({', '.join(placeholders)})
+            RETURNING id
+        """
+        result = db.execute(text(sql), params)
+        new_id = result.scalar()
+        db.commit()
+
+        _log_info(f"✅ Palpite salvo com sucesso! ID={new_id} (modelo={modelo}, usuario={id_usuario})")
+        return new_id
+
+    except Exception as e:
+        db.rollback()
+        _log_warn(f"❌ Falha ao salvar palpite: {e}\nSQL: {sql}\nparams: {params}")
+        return None
+    finally:
+        db.close()
+
+
+# =========================
+# LIMITE POR PLANO
+# =========================
+
+def verificar_limite_palpites(id_usuario: int) -> tuple[bool, str]:
+    """
+    Verifica se o usuário ainda pode gerar palpites no mês atual,
+    de acordo com seu plano (Free, Silver ou Gold).
+
+    Retorna:
+        (permitido: bool, msg: str)
+    """
+
+    db = Session()
+    try:
+        # --- 1️⃣ Obter plano e nome ---
+        result = db.execute(text("""
+            SELECT u.id, p.nome AS nome_plano
+            FROM usuarios u
+            LEFT JOIN planos p ON p.id = u.id_plano
+            WHERE u.id = :id
+        """), {"id": id_usuario}).fetchone()
+
+        if not result:
+            return False, "Usuário não encontrado."
+
+        nome_plano = (result.nome_plano or "").lower()
+
+        # --- 2️⃣ Definir limites mensais ---
+        limites = {
+            "free": 30,     # 30 palpites/mês
+            "silver": 150,  # 150 palpites/mês
+            "gold": 500,    # 500 palpites/mês
+        }
+        limite = limites.get(nome_plano, 30)
+
+        # --- 3️⃣ Calcular período do mês atual ---
+        hoje = datetime.now()
+        inicio_mes = hoje.replace(day=1)
+        fim_mes = hoje.replace(day=28, hour=23, minute=59, second=59)
+        # OBS: pode-se usar calendar.monthrange se quiser precisão de 30/31
+
+        # --- 4️⃣ Contar palpites já feitos ---
+        q = text("""
+            SELECT COUNT(*) AS total
+            FROM palpites
+            WHERE id_usuario = :id_usuario
+              AND dt_criacao >= :inicio_mes
+              AND dt_criacao <= :fim_mes
+        """)
+        total = db.execute(q, {
+            "id_usuario": id_usuario,
+            "inicio_mes": inicio_mes,
+            "fim_mes": fim_mes
+        }).scalar() or 0
+
+        # --- 5️⃣ Validação ---
+        if total >= limite:
+            msg = f"🚫 Limite mensal atingido ({total}/{limite}) para o plano **{nome_plano.title()}**."
+            return False, msg
+        else:
+            restante = limite - total
+            msg = f"✅ Você ainda pode gerar **{restante}** palpites neste mês ({total}/{limite} usados)."
+            return True, msg
+
+    except Exception as e:
+        return False, f"Erro ao validar limite: {e}"
+
+    finally:
+        db.close()
+
+
+# =========================
+# HISTÓRICO
+# =========================
+def historico_palpites_old():
+    st.header("Histórico de Palpites")
+    usuario = st.session_state.get("usuario", {})
+    id_usuario = usuario.get("id")
+
+    db = Session()
+    try:
+        rows = db.execute(text("""
+            SELECT id, modelo,
+                   COALESCE(dezenas, numeros) AS dezenas,
+                   COALESCE(created_at, criado_em, data, NOW()) AS criado_em
+            FROM palpites
+            WHERE (:uid IS NULL OR id_usuario = :uid)
+            ORDER BY criado_em DESC
+            LIMIT 200
+        """), {"uid": id_usuario}).fetchall()
+    except Exception as e:
+        st.error(f"Erro ao consultar histórico: {e}")
+        rows = []
+    finally:
+        db.close()
+
+    if not rows:
+        st.info("Nenhum palpite salvo ainda.")
+        return
+
+    for r in rows:
+        st.write(f"#{r.id} | {r.modelo} | {r.dezenas} | {r.criado_em}")
+
+# =========================
+# INTERFACE (UI)
+# =========================
+# ================================================================
+# 🔧 CONFIGURAÇÃO BASE + IMPORT LAZY (TensorFlow sob demanda)
+# ================================================================
+
 _tf = None
 _tf_load_model = None
 _to_binary = None
 
+
 def _lazy_imports():
+    """
+    Importa TensorFlow e utilitários pesados apenas quando necessário.
+    Evita overhead e falhas em ambientes sem TF instalado (ex: Render lite).
+    """
     global _tf, _tf_load_model, _to_binary
-    if _tf is None:
+    if _tf is not None:
+        return  # já importado
+
+    try:
         import tensorflow as tf
         from tensorflow.keras.models import load_model as tf_load_model
         from modelo_llm_max.utils_ls_models import to_binary
+
         _tf = tf
         _tf_load_model = tf_load_model
         _to_binary = to_binary
 
-# -------------------- CONFIGURAÇÃO BÁSICA --------------------
+        logging.info("✅ TensorFlow importado com sucesso via _lazy_imports().")
+
+    except Exception as e:
+        logging.error(f"⚠️ TensorFlow indisponível: {e}")
+        _tf = None
+        _tf_load_model = None
+        _to_binary = None
+        # Não levanta exceção — o app continua, apenas desativa recursos ML.
+        st.warning("TensorFlow não encontrado — modelos LS14/LS15 estarão desativados.")
+
+
+# ================================================================
+# 📁 CONFIGURAÇÃO DE DIRETÓRIOS E LOGS
+# ================================================================
+
 try:
     _base_file = __file__
 except NameError:
     _base_file = sys.argv[0] if sys.argv and sys.argv[0] else os.getcwd()
 
-BASE_DIR = os.environ.get("FAIXABET_BASE_DIR", os.path.dirname(os.path.dirname(os.path.abspath(_base_file))))
-# por padrão tenta o caminho relativo usado em deploys: modelo_llm_max/models/prod, e também ./models
+BASE_DIR = os.environ.get(
+    "FAIXABET_BASE_DIR",
+    os.path.dirname(os.path.dirname(os.path.abspath(_base_file)))
+)
+
 DEFAULT_MODELS_DIRS = [
     os.path.join(BASE_DIR, "modelo_llm_max", "models", "prod"),
     os.path.join(BASE_DIR, "modelo_llm_max", "models"),
     os.path.join(BASE_DIR, "models"),
     os.environ.get("FAIXABET_MODELS_DIR", "")
 ]
-# escolhe primeiro que existir
+
+# Usa o primeiro caminho existente como diretório de modelos
 MODELS_DIR = next((p for p in DEFAULT_MODELS_DIRS if p and os.path.isdir(p)), DEFAULT_MODELS_DIRS[0])
 
+# Modo debug controlado via variável de ambiente DEBUG_MODE=1
 DEBUG_MODE = os.environ.get("DEBUG_MODE", "0") == "1"
 
-logging.basicConfig(level=logging.DEBUG if DEBUG_MODE else logging.INFO,
-                    format="%(asctime)s %(levelname)s: %(message)s")
+logging.basicConfig(
+    level=logging.DEBUG if DEBUG_MODE else logging.INFO,
+    format="%(asctime)s %(levelname)s: %(message)s"
+)
+
+logging.info(f"🧩 MODELS_DIR definido como: {MODELS_DIR}")
+logging.info(f"🔧 Base dir: {BASE_DIR}")
+logging.info(f"🪶 DEBUG_MODE: {DEBUG_MODE}")
 
 
 def _log_warn(msg):
@@ -82,7 +379,6 @@ def _log_info(msg):
     if DEBUG_MODE:
         st.info(msg)
     logging.info(msg)
-
 
 # TFSMLayer fallback (opcional - usado apenas como último recurso)
 try:
@@ -437,6 +733,67 @@ def _prepare_inputs_for_model_meta(meta, ultimos_full):
         arr = arr[:, :14] if arr.shape[1] >= 14 else arr
         return np.expand_dims(arr[-50:], axis=0)
 
+# ================================================================
+# BLOCO NOVO: CALIBRAÇÃO & PESOS (SOFTMAX + ENSEMBLE)
+# ================================================================
+
+def _softmax(x, temperature=1.0):
+    """Aplica softmax com temperatura para calibrar probabilidades."""
+    x = np.array(x, dtype=np.float32)
+    x = x / float(temperature)
+    e_x = np.exp(x - np.max(x))
+    return e_x / e_x.sum()
+
+def _parse_weights_from_env(default="recent:0.5,mid:0.3,global:0.2"):
+    """
+    Lê os pesos de ensemble a partir da variável de ambiente ENSEMBLE_WEIGHTS.
+    Exemplo: ENSEMBLE_WEIGHTS="recent:0.6,mid:0.3,global:0.1"
+    """
+    raw = os.getenv("ENSEMBLE_WEIGHTS", default)
+    parts = [p.strip() for p in raw.split(",") if ":" in p]
+    weights = {}
+    for p in parts:
+        k, v = p.split(":")
+        try:
+            weights[k.strip()] = float(v)
+        except ValueError:
+            continue
+
+    total = sum(weights.values())
+    if total <= 0:
+        return {"recent": 0.5, "mid": 0.3, "global": 0.2}
+
+    return {k: v / total for k, v in weights.items()}
+
+def combinar_modelos_com_pesos(predicoes_por_grupo, temperature=1.0):
+    """
+    Recebe um dicionário {grupo: vetor_predição(25,)} e aplica:
+    - Softmax (calibração)
+    - Média ponderada conforme ENSEMBLE_WEIGHTS
+    Retorna vetor final (25,)
+    """
+    weights = _parse_weights_from_env()
+    grupos_validos = [g for g in predicoes_por_grupo.keys() if g in weights]
+    if not grupos_validos:
+        grupos_validos = list(predicoes_por_grupo.keys())
+        weights = {g: 1 / len(grupos_validos) for g in grupos_validos}
+
+    soft_preds = {}
+    for g in grupos_validos:
+        soft_preds[g] = _softmax(predicoes_por_grupo[g], temperature=temperature)
+
+    # Média ponderada
+    final = np.zeros_like(list(soft_preds.values())[0])
+    for g in grupos_validos:
+        final += weights[g] * soft_preds[g]
+
+    # Normaliza novamente
+    final /= final.sum()
+
+    _log_info(f"[Ensemble] Grupos={grupos_validos}, Pesos={weights}, Temp={temperature:.2f}")
+    return final
+# ================================================================
+
 def ensemble_predict(models_list, X_inputs):
     if not models_list:
         raise ValueError("Nenhum modelo carregado para ensemble.")
@@ -464,7 +821,18 @@ def ensemble_predict(models_list, X_inputs):
     if not preds:
         raise ValueError("Nenhuma predição válida obtida dos modelos.")
 
-    mean_pred = np.mean(preds, axis=0)
+    # --- Novo ensemble calibrado ---
+    temperature = float(os.getenv("ENSEMBLE_TEMPERATURE", "1.0"))
+
+    # Determina grupo de cada modelo, se possível
+    preds_por_grupo = {}
+    for i, entry in enumerate(models_list):
+        group = "recent"
+        if isinstance(entry, dict):
+            group = entry.get("group", f"m{i}")
+        preds_por_grupo[group] = preds[i][0] if preds[i].ndim > 1 else preds[i]
+
+    mean_pred = combinar_modelos_com_pesos(preds_por_grupo, temperature=temperature)
     return mean_pred
 
 # -------------------- FEATURES / GERADORES SIMPLES --------------------
@@ -479,19 +847,190 @@ def apply_temperature(p, T=1.0):
     scaled = np.exp(logits / float(T))
     return scaled / scaled.sum()
 
-def gerar_palpite_from_probs(probs, limite=15, reinforce_threshold=0.06, boost_factor=2.0, temperature=1.0, deterministic=False):
+# ================================================================
+# Utilitários para diversidade (Gumbel-top-k)
+# ================================================================
+
+def _sample_gumbel(shape, eps=1e-20):
+    """Ruído Gumbel i.i.d para amostragem Top-K."""
+    U = np.random.uniform(0.0, 1.0, shape)
+    return -np.log(-np.log(U + eps) + eps)
+
+def _gumbel_top_k_sampling(probs, k=15, temperature=1.0):
+    """
+    Seleciona Top-K aplicando ruído Gumbel nos logits.
+    - probs: vetor (25,) normalizado
+    - k: número de dezenas
+    - temperature: >1 aumenta diversidade; <1 deixa mais “focado”
+    """
+    logits = np.log(np.clip(probs, 1e-12, 1.0))
+    g = _sample_gumbel(logits.shape)
+    noisy = (logits + g) / float(temperature)
+    topk = np.argsort(-noisy)[:k]
+    return np.sort(topk + 1).tolist()
+
+
+def gerar_palpite_from_probs(
+    probs,
+    limite=15,
+    reinforce_threshold=0.06,
+    boost_factor=2.0,
+    temperature=1.0,
+    deterministic=False
+):
+    """
+    Gera palpites a partir de probabilidades.
+    Agora com diversidade opcional (Gumbel-top-k) controlada por env USE_GUMBEL.
+    Mantém compatibilidade total com chamadas existentes.
+    """
+    use_gumbel = os.getenv("USE_GUMBEL", "0") == "1"
+
+    # 1) Aplica temperatura (mesma lógica existente)
     p = apply_temperature(probs, temperature)
+
+    # 2) Reforço leve em probabilidades altas (mesma lógica existente)
     mask = p > reinforce_threshold
     if mask.any():
         p[mask] = p[mask] * boost_factor
         p = p / p.sum()
+
+    # 3) Caminho determinístico (inalterado)
     if deterministic:
         idxs = np.argsort(-p)[:limite]
         chosen = np.sort(idxs + 1).tolist()
         return chosen
+
+    # 4) Caminho estocástico:
+    #    - se USE_GUMBEL=1 => usa Gumbel-top-k (mais diversidade)
+    #    - caso contrário => amostragem atual por np.random.choice (comportamento igual ao antigo)
+    if use_gumbel:
+        return _gumbel_top_k_sampling(p, k=limite, temperature=temperature)
     else:
         chosen_idxs = np.random.choice(np.arange(25), size=limite, replace=False, p=p)
         return np.sort(chosen_idxs + 1).tolist()
+
+# ================================================================
+# BLOCO NOVO: DIVERSIDADE — GUMBEL-TOP-K SAMPLER (OPCIONAL)
+# ================================================================
+
+def _sample_gumbel(shape, eps=1e-20):
+    """Gera ruído Gumbel i.i.d para amostragem Top-K."""
+    U = np.random.uniform(0, 1, shape)
+    return -np.log(-np.log(U + eps) + eps)
+
+def gumbel_top_k_sampling(probs, k=15, temperature=1.0):
+    """
+    Retorna índices Top-K com ruído Gumbel (para mais diversidade).
+    - probs: vetor (25,) normalizado
+    - k: número de dezenas
+    """
+    logits = np.log(np.clip(probs, 1e-12, 1.0))
+    gumbels = _sample_gumbel(logits.shape)
+    noisy_logits = (logits + gumbels) / float(temperature)
+    topk = np.argsort(-noisy_logits)[:k]
+    return np.sort(topk + 1).tolist()
+
+def gerar_palpite_from_probs_diverso(probs, limite=15, reinforce_threshold=0.06,
+                                     boost_factor=2.0, temperature=1.0,
+                                     deterministic=False):
+    """
+    Wrapper compatível com gerar_palpite_from_probs, adicionando diversidade.
+    Ativado se USE_GUMBEL=1 no ambiente.
+    """
+    use_gumbel = os.getenv("USE_GUMBEL", "0") == "1"
+
+    # Reforço leve, igual ao método original
+    p = np.array(probs, dtype=np.float32)
+    p = np.clip(p, 1e-12, 1.0)
+    mask = p > reinforce_threshold
+    if mask.any():
+        p[mask] *= boost_factor
+        p /= p.sum()
+
+    if deterministic:
+        idxs = np.argsort(-p)[:limite]
+        return np.sort(idxs + 1).tolist()
+
+    if use_gumbel:
+        return gumbel_top_k_sampling(p, k=limite, temperature=temperature)
+    else:
+        chosen_idxs = np.random.choice(np.arange(25), size=limite, replace=False, p=p)
+        return np.sort(chosen_idxs + 1).tolist()
+
+# ================================================================
+# BLOCO NOVO: CONSTRAINTS SUAVES (paridade, consecutivos, distribuição)
+# ================================================================
+
+def _score_palpite_regras(palpite):
+    """
+    Calcula um score baseado em regras da Lotofácil:
+    - Paridade: ideal ~7 ou 8 pares
+    - Consecutivos: penaliza mais de 3 seguidos
+    - Distribuição 5x5: idealmente equilibrado entre 5 linhas e 5 colunas
+    Retorna score ∈ [0,1], quanto maior melhor.
+    """
+    palpite = np.array(sorted(palpite))
+    pares = np.sum(palpite % 2 == 0)
+    impares = len(palpite) - pares
+
+    # ---- regra 1: paridade ----
+    par_score = 1.0 - abs(pares - 7.5) / 7.5  # máximo quando 7 ou 8 pares
+
+    # ---- regra 2: consecutivos ----
+    diffs = np.diff(palpite)
+    consecutivos = np.sum(diffs == 1)
+    consecutivo_score = 1.0 - min(consecutivos, 5) / 5.0  # penaliza mais de 3-4 consecutivos
+
+    # ---- regra 3: distribuição 5x5 (linhas e colunas de 1 a 25) ----
+    matriz = np.arange(1, 26).reshape(5, 5)
+    lin_counts = [np.sum(np.isin(row, palpite)) for row in matriz]
+    col_counts = [np.sum(np.isin(matriz[:, c], palpite)) for c in range(5)]
+    dist_score = 1.0 - (
+        (np.std(lin_counts) + np.std(col_counts)) / (2 * len(palpite))
+    )
+
+    # Score final (média ponderada)
+    final_score = 0.4 * par_score + 0.3 * consecutivo_score + 0.3 * dist_score
+    return max(0.0, min(1.0, final_score))
+
+def ajustar_palpite_por_regras(palpite, max_tentativas=50):
+    """
+    Tenta melhorar o palpite com pequenas trocas até atingir score aceitável.
+    Mantém a mesma quantidade de dezenas.
+    """
+    alvo_minimo = 0.75  # limiar de qualidade
+    limite = len(palpite)
+    melhor = sorted(palpite)
+    melhor_score = _score_palpite_regras(melhor)
+
+    for _ in range(max_tentativas):
+        candidato = melhor.copy()
+        trocas = np.random.randint(1, 4)  # até 3 trocas aleatórias
+        for _ in range(trocas):
+            rem = np.random.choice(candidato)
+            add = np.random.choice([x for x in range(1, 26) if x not in candidato])
+            candidato.remove(rem)
+            candidato.append(add)
+        candidato = sorted(candidato)
+        sc = _score_palpite_regras(candidato)
+        if sc > melhor_score:
+            melhor, melhor_score = candidato, sc
+        if melhor_score >= alvo_minimo:
+            break
+
+    return melhor
+
+def aplicar_constraints_suaves(palpite):
+    """
+    Wrapper para aplicar constraints apenas se USE_SOFT_CONSTRAINTS=1
+    """
+    use_constraints = os.getenv("USE_SOFT_CONSTRAINTS", "0") == "1"
+    if not use_constraints:
+        return palpite
+    return ajustar_palpite_por_regras(palpite)
+# ================================================================
+
+# ============ Bloco filha ===========================================
 
 def _calc_features_from_window(ultimos):
     seq_bin = np.array([to_binary(j) for j in ultimos], dtype=np.float32)
@@ -581,26 +1120,6 @@ def atualizar_contador_palpites(id_usuario):
     finally:
         db.close()
 
-def salvar_palpite(palpite, modelo):
-    db = Session()
-    try:
-        id_usuario = st.session_state.usuario["id"]
-        numeros_str = ','.join(map(str, palpite)) if isinstance(palpite, list) else str(palpite)
-        db.execute(text("""
-            INSERT INTO palpites (id_usuario, numeros, modelo, data, status)
-            VALUES (:id_usuario, :numeros, :modelo, NOW(), 'N')
-        """), {
-            "id_usuario": id_usuario,
-            "numeros": numeros_str,
-            "modelo": modelo
-        })
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        st.error(f"Erro ao salvar palpite: {e}")
-    finally:
-        db.close()
-
 def gerar_palpite_pares_impares(limite=15):
     num_pares = limite // 2
     num_impares = limite - num_pares
@@ -662,7 +1181,7 @@ def _model_paths_for(model_name: str, models_dir: str = None):
         logging.warning(f"[_model_paths_for] models_dir inválido: {models_dir}")
         return []
 
-    tipos = ['regular', 'mid', 'global']
+    tipos = ['recent', 'mid', 'global', 'regular']  # recent primeiro
     encontrados = []
 
     for tipo in tipos:
@@ -726,6 +1245,12 @@ def _load_and_filter_metas_for_plan(model_name, nome_plano, models_dir=None):
     return filtered
 
 def gerar_palpite_ls15(limite=15, models_dir=None):
+    USE_UNIFIED_ENGINE = True
+    if USE_UNIFIED_ENGINE:
+        nome_plano = st.session_state.usuario.get('nome_plano') if 'usuario' in st.session_state and st.session_state.usuario else None
+        res = gerar_palpite_ls("ls15", limite=limite, n_palites=1, nome_plano=nome_plano, models_dir=models_dir)
+        return res[0] if res else []
+
     nome_plano = st.session_state.usuario.get('nome_plano') if 'usuario' in st.session_state and st.session_state.usuario else None
     res = gerar_palpite_ls("ls15", limite=limite, n_palites=1, nome_plano=nome_plano, models_dir=models_dir)
     return res[0] if res else []
@@ -927,56 +1452,125 @@ def historico_palpites():
     finally:
         db.close()
 
+# 🔹 Helper para compatibilidade de rerun
+def _safe_rerun():
+    """Rerun compatível com versões novas e antigas do Streamlit."""
+    try:
+        st.rerun()  # Streamlit >= 1.27
+    except AttributeError:
+        st.experimental_rerun()  # compatibilidade com versões antigas
+
+
+# 🔹 Função para atualizar o status do palpite no banco
+def _validar_no_banco(pid: int):
+    db = Session()
+    try:
+        db.execute(text("""
+            UPDATE palpites SET status = 'S' WHERE id = :pid
+        """), {"pid": pid})
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        st.error(f"Erro ao validar: {e}")
+    finally:
+        db.close()
+
+
+# 🔹 Função principal
 def validar_palpite():
+    """Exibe os palpites em cards com botão de validação individual."""
     if "usuario" not in st.session_state or not st.session_state.usuario:
         st.warning("Você precisa estar logado para validar seus Palpites.")
         return
+
     st.markdown("### 📤 Validar Palpite")
 
     db = Session()
     try:
-        palpites = db.execute(text("""
+        rows = db.execute(text("""
             SELECT id, numeros, modelo, data, status
             FROM palpites
-            WHERE id_usuario = :uid AND status != 'S'
+            WHERE id_usuario = :uid
             ORDER BY data DESC
-            LIMIT 10
+            LIMIT 50
         """), {"uid": st.session_state.usuario["id"]}).fetchall()
-
     except Exception as e:
         st.error(f"Erro ao buscar Palpites: {e}")
         return
     finally:
         db.close()
 
-    if not palpites:
+    if not rows:
         st.info("Você ainda não gerou nenhum Palpite.")
         return
 
-    st.markdown("#### Escolha o Palpite para validar:")
-    opcoes = {f"#{pid} | {modelo} | {data.strftime('%d/%m %H:%M')}": pid for pid, _, modelo, data, _ in palpites}
-    selecao = st.selectbox("Palpites disponíveis:", list(opcoes.keys()))
+    # --- CSS grid responsiva ---
+    st.markdown("""
+    <style>
+    .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: 14px;
+        max-height: 550px;
+        overflow-y: auto;
+        padding: 8px;
+    }
+    .palpite-card {
+        background: #f9fff9;
+        border: 2px solid #009900;
+        border-radius: 12px;
+        padding: 10px 14px;
+        box-shadow: 0 2px 8px rgba(0,0,0,.08);
+    }
+    .palpite-header {
+        font-weight: bold;
+        color: #009900;
+        margin-bottom: 4px;
+    }
+    .palpite-data {
+        font-size: 13px;
+        color: #555;
+        margin-bottom: 6px;
+    }
+    .palpite-dezenas {
+        font-family: monospace;
+        font-size: 15px;
+        color: #000;
+        word-spacing: 5px;
+        margin-bottom: 8px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
-    if st.button("✅ Validar este Palpite"):
-        palpite_id = opcoes[selecao]
-        db = Session()
-        try:
-            db.execute(text("""
-                UPDATE palpites
-                SET status = 'S'
-                WHERE id = :pid AND id_usuario = :uid
-            """), {
-                "pid": palpite_id,
-                "uid": st.session_state.usuario["id"]
-            })
-            db.commit()
-            st.success(f"Palpite #{palpite_id} marcado como validado com sucesso! Agora ele será destacado como oficial.")
-            st.experimental_rerun()
-        except Exception as e:
-            db.rollback()
-            st.error(f"Erro ao validar palpite: {e}")
-        finally:
-            db.close()
+    # --- Renderização em grid ---
+    st.markdown('<div class="grid">', unsafe_allow_html=True)
+
+    for pid, numeros, modelo, data, status in rows:
+        dezenas = " ".join(f"{int(d):02d}" for d in str(numeros).replace(",", " ").split() if d.isdigit())
+
+        # renderiza o card
+        st.markdown(
+            f"""
+            <div class="palpite-card">
+                <div class="palpite-header">#{pid} — {modelo}</div>
+                <div class="palpite-data">{data.strftime('%d/%m/%Y %H:%M')}</div>
+                <div class="palpite-dezenas">{dezenas}</div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        # renderiza botão abaixo do card
+        if status != "S":
+            if st.button(f"✅ Validar #{pid}", key=f"val_{pid}"):
+                _validar_no_banco(pid)
+                st.success(f"Palpite #{pid} validado com sucesso! 🎯")
+                _safe_rerun()
+        else:
+            st.caption("✅ Já validado")
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
 
 def gerar_palpite_ls(modelo: str, limite=15, n_palites=1, nome_plano=None, models_dir=None):
     """
@@ -1062,6 +1656,7 @@ def gerar_palpite_ls(modelo: str, limite=15, n_palites=1, nome_plano=None, model
         for _ in range(n_palites):
             for _t in range(60):
                 pal = gerar_palpite_from_probs(probs, limite=limite, deterministic=False)
+                pal = aplicar_constraints_suaves(pal)  # ← NOVO
                 tpl = tuple(pal)
                 if tpl not in tentativas:
                     tentativas.add(tpl)
@@ -1107,6 +1702,158 @@ def gerar_palpite_ls(modelo: str, limite=15, n_palites=1, nome_plano=None, model
 
     return palpites
 
+# ================================================================
+# Modal FaixaBet — versão estável e funcional (sem congelar tela)
+# ================================================================
+
+def _normalize_numbers(x):
+    out = []
+    if isinstance(x, (list, tuple)):
+        for v in x:
+            out.extend(_normalize_numbers(v))
+        return out
+    if isinstance(x, str):
+        return [int(n) for n in re.findall(r"\d+", x)]
+    try:
+        return [int(x)]
+    except Exception:
+        return out
+
+def _extract_id_and_numbers(item):
+    pid = None
+    dezenas = []
+    if isinstance(item, dict):
+        for k in ("id", "id_palpite", "id_registro", "pk", "id_palpites"):
+            if k in item and item[k]:
+                pid = str(item[k])
+                break
+        for k in ("numeros", "dezenas", "palpite", "jogada"):
+            if k in item and item[k]:
+                dezenas = _normalize_numbers(item[k])
+                break
+    elif isinstance(item, (list, tuple)):
+        for v in item:
+            dezenas.extend(_normalize_numbers(v))
+        if dezenas and isinstance(item[0], (int, str)) and not isinstance(item[0], list):
+            pid = str(item[0])
+    elif isinstance(item, str):
+        dezenas = _normalize_numbers(item)
+    else:
+        dezenas = _normalize_numbers(item)
+    id_str = f" · id {pid}" if pid else ""
+    return id_str, dezenas
+
+def exibir_modal_palpites(palpites_gerados):
+    cards = []
+    for i, item in enumerate(palpites_gerados or [], start=1):
+        id_str, dezenas_list = _extract_id_and_numbers(item)
+        dezenas_txt = " ".join(f"{int(d):02d}" for d in dezenas_list)
+        cards.append(f"""
+        <div class="palpite-card">
+            <div class="palpite-num">#{i}{id_str}</div>
+            <div class="palpite-dezenas">{dezenas_txt}</div>
+        </div>
+        """)
+    cards_html = "".join(cards) or "<div style='opacity:.7'>Sem palpites.</div>"
+
+    rows = math.ceil(max(1, len(palpites_gerados or [1])) / 3)
+    fallback_height = max(400, min(1100, 240 + rows * 100))
+
+    html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+:root {{
+  --brand: #07a507;
+  --bg-dim: rgba(0,0,0,.45);
+}}
+html, body {{
+  margin:0; padding:0; font-family: system-ui, 'Segoe UI', Roboto, Arial, sans-serif;
+  background: transparent;
+}}
+.overlay {{
+  position: fixed; inset:0; background: var(--bg-dim);
+  display:flex; align-items:center; justify-content:center;
+}}
+.modal {{
+  position: relative;
+  width: min(940px, 94vw);
+  max-height: 88vh; overflow:auto;
+  background:#fff; border:2px solid var(--brand);
+  border-radius:16px; box-shadow:0 10px 30px rgba(0,0,0,.25);
+  padding:20px 22px;
+}}
+.close {{
+  position:absolute; top:10px; right:14px;
+  border:0; background:none; color:var(--brand);
+  font-size:24px; cursor:pointer;
+}}
+h3 {{ text-align:center; color:var(--brand); margin:6px 0 10px; }}
+.msg {{ text-align:center; margin:4px 0 14px; font-weight:600; }}
+.grid {{
+  display:grid; gap:12px;
+  grid-template-columns: repeat(auto-fit, minmax(260px,1fr));
+}}
+.palpite-card {{
+  background:#eaffe9; border:2px solid var(--brand);
+  border-radius:12px; padding:8px 10px;
+  word-wrap:break-word; overflow-wrap:break-word;
+}}
+.palpite-num {{ color:var(--brand); font-weight:700; margin-bottom:4px; }}
+.palpite-dezenas {{
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size:14px; color:#000; line-height:1.4;
+  white-space:normal;
+}}
+.tip {{
+  margin-top:14px; text-align:center; color:#555; font-size:13px;
+}}
+</style>
+</head>
+<body>
+<div class="overlay" id="fxb-overlay">
+  <div class="modal" role="dialog" aria-modal="true">
+    <button class="close" id="fxb-close" title="Fechar">✕</button>
+    <h3>Palpites Gerados</h3>
+    <div class="msg">Hoje é o dia certo para apostar!</div>
+    <div class="grid">{cards_html}</div>
+    <div class="tip">💡 Selecione e copie os números (Ctrl+C) para colar onde quiser.</div>
+  </div>
+</div>
+<script>
+(function(){{
+  const iframe = window.frameElement;
+  function lockScroll(lock){{
+    const pd = window.parent.document;
+    const ht = pd.documentElement, bd = pd.body;
+    if(lock){{ ht.style.overflow='hidden'; bd.style.overflow='hidden'; }}
+    else{{ ht.style.overflow=''; bd.style.overflow=''; }}
+  }}
+  function closeModal(){{
+    if(!iframe) return;
+    lockScroll(false);
+    iframe.remove();
+  }}
+  if(iframe){{
+    iframe.style.position='fixed';
+    iframe.style.top='0'; iframe.style.left='0';
+    iframe.style.width='100vw'; iframe.style.height='100vh';
+    iframe.style.zIndex='999999'; iframe.style.background='transparent';
+    lockScroll(true);
+    document.getElementById('fxb-close').onclick=closeModal;
+    document.getElementById('fxb-overlay').onclick=(e)=>{{ if(e.target.id==='fxb-overlay') closeModal(); }};
+    window.onkeydown=(e)=>{{ if(e.key==='Escape') closeModal(); }};
+  }}
+}})();
+</script>
+</body>
+</html>
+    """
+
+    components.html(html, height=fallback_height, scrolling=False)
+
 # -------------------- UI / CORE - GENERATION --------------------
 def gerar_palpite_ui():
     st.title("Gerar Bets")
@@ -1142,7 +1889,14 @@ def gerar_palpite_ui():
         logging.warning("[gerar_palpite_ui] Plano do usuário não encontrado")
         return
 
-    st.markdown(f"<div>Plano atual: <strong>{nome_plano}</strong></div>", unsafe_allow_html=True)
+    st.markdown(
+    f"""
+    <div style="font-size:19px; font-weight:bold; color:#222;">
+        Plano atual: <span style="color:#009900;">{nome_plano}</span>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
 
     # Verifica limite de palpites
     permitido, nome_plano_verif, palpites_restantes = verificar_limite_palpites(id_usuario)
@@ -1166,7 +1920,7 @@ def gerar_palpite_ui():
         modelos_disponiveis = ["Aleatório"]
         min_dezenas, max_dezenas = 15, 15
 
-    modelo = st.selectbox("Modelo de Geração:", modelos_disponiveis, key="select_modelo")
+    modelo = st.selectbox("Modelos disponiveis para o plano:", modelos_disponiveis, key="select_modelo")
     qtde_dezenas = st.number_input(
         "Quantas dezenas por palpite?",
         min_value=min_dezenas, max_value=max_dezenas,
@@ -1178,8 +1932,62 @@ def gerar_palpite_ui():
         value=1, step=1, key="num_palpites"
     )
 
-    if not st.button("Gerar Palpites", key="btn_gerar_palpites_ui"):
-        return
+        # --- CSS do botão estilizado ---
+    # --- CSS do botão (verde, largo e fonte grande) ---
+    st.markdown("""
+        <style>
+        /* --- Estilo base: mobile first --- */
+        [data-testid="stButton"] {
+            display: flex !important;
+            justify-content: center !important;  /* 🔹 centraliza horizontalmente */
+            align-items: center !important;
+            width: 100% !important;
+        }
+
+        [data-testid="stButton"] button {
+            background-color: #009900 !important;
+            color: #ffffff !important;
+            font-size: 24px !important;
+            font-weight: 700 !important;
+            border: none !important;
+            border-radius: 12px !important;
+            padding: 16px 24px !important;
+            width: 100% !important;              /* ocupa toda a largura no mobile */
+            max-width: 340px !important;         /* limite visual */
+            box-shadow: none !important;
+            transition: all .2s ease-in-out;
+        }
+
+        /* Texto dentro do botão */
+        [data-testid="stButton"] button p {
+            font-size: 26px !important;
+            font-weight: 700 !important;
+            margin: 0 !important;
+        }
+
+        /* Hover e click */
+        [data-testid="stButton"] button:hover {
+            background-color: #00b300 !important;
+            transform: scale(1.03);
+        }
+        [data-testid="stButton"] button:active {
+            background-color: #007a00 !important;
+        }
+
+        /* --- Ajuste para telas maiores (desktop/tablet) --- */
+        @media (min-width: 768px) {
+            [data-testid="stButton"] button {
+                width: 320px !important;         /* largura fixa */
+            }
+        }
+        </style>
+        """, unsafe_allow_html=True)
+
+        # botão único, sem duplicar key
+    clicked = st.button("Gerar Palpites", key="btn_gerar_palpites_ui")
+    if not clicked:
+       return
+
 
     palpites_gerados = []
     tentativas = set()
@@ -1235,10 +2043,13 @@ def gerar_palpite_ui():
             tpl = tuple(palpite)
             if tpl not in tentativas:
                 tentativas.add(tpl)
-                salvar_palpite(palpite, modelo)
+                palpite_id = salvar_palpite(palpite, modelo)
                 atualizar_contador_palpites(id_usuario)
-                palpites_gerados.append(palpite)
-                logging.info(f"[gerar_palpite_ui] Palpite gerado: {palpite}")
+
+            if palpite_id:
+                palpites_gerados.append({"id": palpite_id, "numeros": palpite})
+                logging.info(f"[gerar_palpite_ui] Palpite gerado (ID={palpite_id}): {palpite}")
+
 
         except Exception as e:
             st.error(f"Erro ao gerar palpite: {e}")
@@ -1246,10 +2057,17 @@ def gerar_palpite_ui():
 
     # Exibe resultados
     if palpites_gerados:
-        st.success(f"{len(palpites_gerados)} palpite(s) gerado(s) com sucesso:")
-        for p in palpites_gerados:
-            st.write(", ".join(map(str, p)))
+        st.success(f"{len(palpites_gerados)} palpites gerados com sucesso!")
+
+        # ✅ Modal bonita (3 colunas × 4 linhas + scroll + botão X)
+        exibir_modal_palpites(palpites_gerados)
+
+        # (Opcional) Listagem simples abaixo da modal:
+        # for p in palpites_gerados:
+        #     st.write(", ".join(f"{d:02d}" for d in p))
+
     else:
         st.warning("Nenhum palpite foi gerado.")
-        logging.warning("[gerar_palpite_ui] Nenhum palpite gerado após todas tentativas")
+        logging.warning("[gerar_palpite_ui] Nenhum palpite gerado após todas as tentativas.")
+
 

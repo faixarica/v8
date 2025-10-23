@@ -1,4 +1,4 @@
-# main v8.004
+# main v8.007
 # -------------------- [1] IMPORTS --------------------
 
 import os,secrets,smtplib, requests,base64
@@ -138,7 +138,7 @@ def css_global():
         transform: scale(1.1);
     }
     </style>
-        </style>
+</style>
     """, unsafe_allow_html=True)
 
 # tava aqui a def q fazia download do database do sqlite
@@ -757,7 +757,8 @@ if st.session_state.get("logged_in", False):
         print("Senha hash (tipo):", type(senha_hash))
         print("Senha hash (conteúdo):", senha_hash)
     except NameError as ne:
-        print(f"[AVISO] Variável não definida: {ne}")
+       # print(f"[AVISO] Variável não definida: {ne}")
+       pass
     except Exception as e:
         print(f"[ERRO] Problema ao imprimir a senha: {e}")
 
@@ -869,4 +870,4 @@ if st.session_state.get("logged_in", False):
 
 
 # --- FIM DO BLOCO DE LOGIN / CADASTRO ---
-    st.sidebar.markdown("<div style='text-align:left; color:green; font-size:16px;'>fAIxaBet v8.05</div>", unsafe_allow_html=True)
+    st.sidebar.markdown("<div style='text-align:left; color:green; font-size:16px;'>fAIxaBet v8.07</div>", unsafe_allow_html=True)

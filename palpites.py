@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-palpites_v8.006n.py
+palpites_v8.10.py
 Consolidado e funcional — compatível com Streamlit e PostgreSQL.
 Inclui:
 - geração de palpites (estatístico, pares/ímpares, LS14, LS15)
@@ -10,17 +10,33 @@ Inclui:
 """
 import streamlit.components.v1 as components
 import random
+import pandas as pd
 import os, random, logging, json
 import numpy as np
 import streamlit as st
 from sqlalchemy import text
-from datetime import datetime, timedelta
+from datetime import datetime, date, timedelta
 from db import Session
 import math
+from functools import lru_cache
 import re
+# --- LS16: ensemble inteligente (tenta usar modelo_llm_loteria/ensemble.py)
+try:
+    from modelo_llm_max.ensemble import gerar_palpite_ensemble as _fxb_ls16_ensemble
+except Exception:
+    _fxb_ls16_ensemble = None
+
 # =========================
 # CONFIG LOG
+
 # =========================
+
+# --- LS16: ensemble inteligente (tenta usar modelo_llm_max/ensemble.py)
+try:
+    from modelo_llm_max.ensemble import gerar_palpite_ensemble as _fxb_ls16_ensemble
+except Exception:
+    _fxb_ls16_ensemble = None
+
 DEBUG_MODE = os.environ.get("DEBUG_MODE", "0") == "1"
 logging.basicConfig(
     level=logging.DEBUG if DEBUG_MODE else logging.INFO,
@@ -35,7 +51,6 @@ def _safe_rerun():
         # Streamlit mais antigo
         _safe_rerun()
         
-
 def _log_info(msg):
     logging.info(msg)
     if DEBUG_MODE:
@@ -45,6 +60,29 @@ def _log_warn(msg):
     logging.warning(msg)
     if DEBUG_MODE:
         st.warning(msg)
+
+def get_conn():
+    """
+    Retorna conexão SQLAlchemy com o banco PostgreSQL (Neon.tech).
+    Usa variáveis de ambiente: DATABASE_URL, POSTGRES_URL ou PG_URI.
+    """
+    db_url = (
+        os.getenv("DATABASE_URL")
+        or os.getenv("POSTGRES_URL")
+        or os.getenv("PG_URI")
+    )
+
+    if not db_url:
+        st.error("❌ Variável de conexão DATABASE_URL não encontrada no ambiente.")
+        return None
+
+    try:
+        engine = create_engine(db_url)
+        return engine.connect()
+    except Exception as e:
+        st.error(f"Erro ao conectar ao banco de dados: {e}")
+        return None
+
 
 # =========================
 # FUNÇÕES AUXILIARES
@@ -65,6 +103,187 @@ def _existing_cols(table_name: str) -> set:
     finally:
         db.close()
 
+# ================== [MODEL BRIDGE] LS14 / LS15 / LS16 ==================
+
+# --- caminhos / arquivos
+BASE_DIR = os.getcwd()
+CSV_LOTOFACIL = os.path.join(BASE_DIR, "loteria.csv")  # ajuste se precisar
+
+# -------- Estatístico (freq + recência + correlação) --------
+
+def _carregar_df_lotofacil():
+    if not os.path.exists(CSV_LOTOFACIL):
+        raise FileNotFoundError(f"CSV não encontrado: {CSV_LOTOFACIL}")
+    df = pd.read_csv(CSV_LOTOFACIL, encoding="utf-8")
+    bolas = [f"Bola{i}" for i in range(1, 16)]
+    for b in bolas:
+        df[b] = df[b].astype(str).str.zfill(2)
+    if "Concurso" in df.columns:
+        df = df.sort_values("Concurso", ascending=False)
+    return df, bolas
+
+@lru_cache(maxsize=1)
+def _stats_pack(recencia=100):
+    df, bolas = _carregar_df_lotofacil()
+
+    # Frequência global
+    todas = df[bolas].values.flatten()
+    freq_global = pd.Series(todas).value_counts().sort_index()
+    freq_global = {int(k): int(v) for k, v in freq_global.items()}
+
+    # Frequência recente
+    subset = df.head(recencia) if len(df) > recencia else df
+    todas_rec = subset[bolas].values.flatten()
+    freq_rec = pd.Series(todas_rec).value_counts().sort_index()
+    freq_rec = {int(k): int(v) for k, v in freq_rec.items()}
+
+    # Correlação (coocorrência par-a-par)
+    nums_df = df[bolas].apply(pd.to_numeric)
+    corr = pd.DataFrame(0, index=range(1, 26), columns=range(1, 26))
+    for _, row in nums_df.iterrows():
+        arr = row.values
+        for i in range(15):
+            for j in range(i+1, 15):
+                a, b = int(arr[i]), int(arr[j])
+                corr.loc[a, b] += 1
+                corr.loc[b, a] += 1
+
+    return freq_global, freq_rec, corr, df, bolas
+
+def scores_estatisticos(alpha_hist=0.7, alpha_recent=0.3):
+    """
+    Frequência histórica + recência (vetor 25 normalizado).
+    """
+    freq_global, freq_rec, _, _, _ = _stats_pack()
+    v = np.zeros(25, dtype=float)
+    for d in range(1, 26):
+        g = float(freq_global.get(d, 0))
+        r = float(freq_rec.get(d, 0))
+        v[d-1] = alpha_hist * g + alpha_recent * r
+    return _normalize_probs(v)
+
+def scores_correlacao(boost_from=set()):
+    """
+    Coocorrência: soma linhas da matriz de coocorrência para dezenas 'boost_from'.
+    """
+    _, _, corr, _, _ = _stats_pack()
+    if not boost_from:
+        return np.ones(25, dtype=float) / 25.0
+    s = np.zeros(25, dtype=float)
+    for b in boost_from:
+        try:
+            bi = int(b)
+            if 1 <= bi <= 25:
+                s += np.asarray(corr.loc[bi].values, dtype=float)
+        except Exception:
+            continue
+    s = np.maximum(s, 0.0)
+    return _normalize_probs(s)
+
+# cache global para evitar loop recursivo
+# --- Anti-loop / caches globais ---
+_IN_SCORES_LS16 = False         # flag de reentrância para LS16
+_LS15_CACHE = None              # cache de vetor (25,) vindo do LS15
+_LOADED_METAS = {}              # cache de modelos carregados por (model_name, models_dir, mtime)
+
+@lru_cache(maxsize=1)
+def combinacoes_ja_sorteadas():
+    """Set de tuplas(15) com todas as combinações já sorteadas (para veto)."""
+    _, _, _, df, bolas = _stats_pack()
+    usados = set(tuple(sorted(map(int, r[bolas].values))) for _, r in df.iterrows())
+    return usados
+
+# -------- Adapters LS14 / LS15 (não quebram se modelo não estiver pronto) --------
+def _score_from_ls_via_amostragem(func_gerador, amostras=200):
+    """
+    Se o gerador é LS14/LS15, reduz amostras para 1 (evita loops + reloads).
+    Caso contrário, mantém o comportamento original.
+    """
+    name = getattr(func_gerador, "__name__", "").lower()
+    if "ls14" in name or "ls15" in name or "gerar_palpite_ls" in name:
+        amostras = 1  # 🔑 evita disparar load/predict repetidas
+
+    cont = np.zeros(25, dtype=float)
+    ok = 0
+    for _ in range(max(1, amostras)):
+        try:
+            bet = func_gerador()  # pode devolver list ou [list]
+            if isinstance(bet, (list, tuple)) and len(bet) == 1 and isinstance(bet[0], (list, tuple)):
+                bet = bet[0]
+            if not bet:
+                continue
+            for d in bet:
+                di = int(d)
+                if 1 <= di <= 25:
+                    cont[di - 1] += 1.0
+            ok += 1
+        except Exception:
+            continue
+
+    if ok == 0 or cont.sum() <= 0:
+        return np.zeros(25, dtype=float)
+    return _normalize_probs(cont)
+
+@lru_cache(maxsize=4)
+def _score_from_ls(model_name: str):
+    """
+    Obtém 25 scores do LS14/LS15 via amostragem de geradores locais.
+    Se falhar, retorna zeros (o chamador faz fallback para estatístico).
+    """
+    try:
+        if model_name.upper() == "LS14" and 'gerar_palpite_ls14' in globals():
+            return _score_from_ls_via_amostragem(globals()['gerar_palpite_ls14'], amostras=200)
+        if model_name.upper() == "LS15" and 'gerar_palpite_ls15' in globals():
+            return _score_from_ls_via_amostragem(globals()['gerar_palpite_ls15'], amostras=200)
+    except Exception as e:
+        print(f"⚠️ Falha ao amostrar {model_name}: {e}")
+
+    return np.zeros(25, dtype=float)
+
+def scores_neurais(model_name: str):
+    """
+    Tenta obter scores (25,) por amostragem do gerador LS.
+    Não recarrega modelos N vezes (vide sampler acima).
+    """
+    v = _score_from_ls(model_name)
+    if v.sum() <= 0 or not np.all(np.isfinite(v)):
+        return np.zeros(25, dtype=float)
+    return _normalize_probs(v)
+
+def scores_ls16(model_name_for_ensemble="LS15", w_neural=0.6, w_stats=0.4):
+    """
+    LS16 híbrido com cache de LS15 e anti-reentrância.
+    - Se já está computando LS16, cai para estatístico (evita recursão indireta).
+    - Reusa _LS15_CACHE quando existir; não chama LS15 repetidas vezes.
+    """
+    global _IN_SCORES_LS16, _LS15_CACHE
+    if _IN_SCORES_LS16:
+        return scores_estatisticos()
+
+    _IN_SCORES_LS16 = True
+    try:
+        # usa cache LS15 se disponível
+        if _LS15_CACHE is not None and np.isfinite(_LS15_CACHE).all() and _LS15_CACHE.sum() > 0:
+            s_n = _LS15_CACHE
+        else:
+            s_n = _score_from_ls(model_name_for_ensemble)
+            if s_n is not None and np.isfinite(s_n).all() and s_n.sum() > 0:
+                _LS15_CACHE = _normalize_probs(s_n)
+            else:
+                _LS15_CACHE = None
+
+        s_e = scores_estatisticos()
+
+        if _LS15_CACHE is None:
+            return s_e
+
+        s = w_neural * _LS15_CACHE + w_stats * s_e
+        return _normalize_probs(s)
+    except Exception as e:
+        logging.error(f"[scores_ls16] Falhou: {e}")
+        return scores_estatisticos()
+    finally:
+        _IN_SCORES_LS16 = False
 
 # =========================
 # GERAÇÃO ESTATÍSTICA
@@ -87,22 +306,29 @@ def gerar_palpite_aleatorio(limite=15):
 # ================================================================
 # BLOCO FINAL: SALVAR PALPITE COM TELEMETRIA (meta JSON)
 # ================================================================
-import json, os
-from datetime import datetime
-
 # ================================================================
 # SALVAR PALPITE — versão final (coluna 'numeros' padrão oficial)
 # ================================================================
+
 def salvar_palpite(palpite, modelo, extras_meta=None):
     """
-    Salva palpite no banco (PostgreSQL/Neon), usando 'numeros' como coluna principal.
+    Salva palpite no banco (PostgreSQL/Neon), compatível com campo data_norm.
     Retorna o ID do palpite inserido.
+    Corrigido para evitar erro 'sql not defined' em exceções.
     """
     usuario = st.session_state.get("usuario", {}) if 'usuario' in st.session_state else {}
     id_usuario = usuario.get("id")
+
     if not id_usuario:
         _log_warn("Usuário não logado — não é possível salvar palpite.")
         return None
+
+    # 🔹 Força nome correto de modelo híbrido (Platinum → LS16)
+    if extras_meta and isinstance(extras_meta, dict):
+        plano = str(extras_meta.get("plano", "")).lower()
+        if plano == "platinum" and not modelo.upper().startswith("LS16"):
+            _log_info(f"Forçando modelo LS16 (plano={plano})")
+            modelo = "LS16"
 
     dezenas_txt = ",".join(f"{int(d):02d}" for d in palpite)
     cols = _existing_cols("palpites")
@@ -151,6 +377,8 @@ def salvar_palpite(palpite, modelo, extras_meta=None):
     # --- [3] SQL dinâmico ---
     db = Session()
     new_id = None
+    sql = ""
+    params = {}
     try:
         base_cols = ["id_usuario", "modelo", num_col]
         params = {"id_usuario": id_usuario, "modelo": modelo, num_col: dezenas_txt}
@@ -165,6 +393,11 @@ def salvar_palpite(palpite, modelo, extras_meta=None):
         if "meta" in cols:
             base_cols.append("meta")
             params["meta"] = json.dumps(meta_payload, ensure_ascii=False)
+
+        # ✅ adiciona data_norm se existir
+        if "data_norm" in cols:
+            base_cols.append("data_norm")
+            params["data_norm"] = date.today().isoformat()  # agora 'date' está importado
 
         placeholders = [("NOW()" if c == ts_col else f":{c}") for c in base_cols]
         sql = f"""
@@ -181,15 +414,17 @@ def salvar_palpite(palpite, modelo, extras_meta=None):
 
     except Exception as e:
         db.rollback()
-        _log_warn(f"❌ Falha ao salvar palpite: {e}\nSQL: {sql}\nparams: {params}")
+        safe_sql = sql or "<não definido>"
+        safe_params = params or {}
+        _log_warn(f"❌ Falha ao salvar palpite: {e}\nSQL: {safe_sql}\nparams: {safe_params}")
         return None
     finally:
         db.close()
 
+# 🔹 Normalização dos nomes de modelo para exibição amigável
 
 # =========================
 # LIMITE POR PLANO
-# =========================
 
 def verificar_limite_palpites(id_usuario: int) -> tuple[bool, str]:
     """
@@ -258,50 +493,13 @@ def verificar_limite_palpites(id_usuario: int) -> tuple[bool, str]:
     finally:
         db.close()
 
-
-# =========================
-# HISTÓRICO
-# =========================
-def historico_palpites_old():
-    st.header("Histórico de Palpites")
-    usuario = st.session_state.get("usuario", {})
-    id_usuario = usuario.get("id")
-
-    db = Session()
-    try:
-        rows = db.execute(text("""
-            SELECT id, modelo,
-                   COALESCE(dezenas, numeros) AS dezenas,
-                   COALESCE(created_at, criado_em, data, NOW()) AS criado_em
-            FROM palpites
-            WHERE (:uid IS NULL OR id_usuario = :uid)
-            ORDER BY criado_em DESC
-            LIMIT 200
-        """), {"uid": id_usuario}).fetchall()
-    except Exception as e:
-        st.error(f"Erro ao consultar histórico: {e}")
-        rows = []
-    finally:
-        db.close()
-
-    if not rows:
-        st.info("Nenhum palpite salvo ainda.")
-        return
-
-    for r in rows:
-        st.write(f"#{r.id} | {r.modelo} | {r.dezenas} | {r.criado_em}")
-
-# =========================
 # INTERFACE (UI)
-# =========================
 # ================================================================
 # 🔧 CONFIGURAÇÃO BASE + IMPORT LAZY (TensorFlow sob demanda)
-# ================================================================
 
 _tf = None
 _tf_load_model = None
 _to_binary = None
-
 
 def _lazy_imports():
     """
@@ -331,10 +529,8 @@ def _lazy_imports():
         # Não levanta exceção — o app continua, apenas desativa recursos ML.
         st.warning("TensorFlow não encontrado — modelos LS14/LS15 estarão desativados.")
 
-
 # ================================================================
 # 📁 CONFIGURAÇÃO DE DIRETÓRIOS E LOGS
-# ================================================================
 
 try:
     _base_file = __file__
@@ -368,12 +564,10 @@ logging.info(f"🧩 MODELS_DIR definido como: {MODELS_DIR}")
 logging.info(f"🔧 Base dir: {BASE_DIR}")
 logging.info(f"🪶 DEBUG_MODE: {DEBUG_MODE}")
 
-
 def _log_warn(msg):
     if DEBUG_MODE:
         st.warning(msg)
     logging.warning(msg)
-
 
 def _log_info(msg):
     if DEBUG_MODE:
@@ -388,7 +582,6 @@ except Exception:
         from tensorflow.keras.layers import TFSMLayer  # type: ignore
     except Exception:
         TFSMLayer = None
-
 
 # -------------------- REGRAS DE PLANOS --------------------
 _PLAN_TO_GROUPS = {
@@ -517,7 +710,7 @@ def _cached_load_ensemble_models(model_name: str, models_dir: str, dir_mtime: fl
 
 # ======================================================
 # PATCH DE COMPATIBILIDADE - aceitar models_dir
-# ======================================================
+
 def carregar_ensemble_models(model_name, models_dir=None):
     """
     Wrapper compatível com versões antigas de palpites.py.
@@ -658,7 +851,6 @@ def infer_model_input_shape(loaded):
     except Exception:
         return None
 
-
 def infer_expected_seq_from_loaded_model(loaded):
     try:
         ins = getattr(loaded, 'inputs', None)
@@ -685,53 +877,116 @@ def infer_expected_seq_from_loaded_model(loaded):
 
 def _prepare_inputs_for_model_meta(meta, ultimos_full):
     """
-    Prepara os dados de entrada (X) para o modelo conforme a meta.
-    Faz a adequação automática do número de features (ex: LS14 → 14 colunas).
+    Prepara X para o modelo como sequência de one-hot (25 features).
+    Garante shape: (1, expected_seq_len, 25)
+    - expected_seq_len: meta.get('expected_seq_len') OU inferido OU 50
+    - features: SEMPRE 25 (one-hot das dezenas 1..25)
     """
     import numpy as np
+
+    # helper local (fallback caso _to_binary não esteja disponível)
+    def _one_hot_25(jogo):
+        v = np.zeros(25, dtype=np.float32)
+        for d in jogo:
+            try:
+                di = int(d)
+                if 1 <= di <= 25:
+                    v[di - 1] = 1.0
+            except Exception:
+                continue
+        return v
+
+    # 1) expected_seq_len
+    expected_seq_len = meta.get("expected_seq_len")
+    if not expected_seq_len:
+        try:
+            inferred = infer_expected_seq_from_loaded_model(meta.get("model"))
+            expected_seq_len = inferred or 50
+        except Exception:
+            expected_seq_len = 50
+
+    # 2) converte últimos concursos para one-hot (25)
+    seq = []
+    for jogo in ultimos_full:
+        if "_to_binary" in globals() and _to_binary is not None:
+            try:
+                seq.append(np.array(_to_binary(jogo), dtype=np.float32))
+                continue
+            except Exception:
+                pass
+        # fallback
+        seq.append(_one_hot_25(jogo))
+
+    seq = np.asarray(seq, dtype=np.float32)  # shape (n, 25)
+
+    # 3) ajusta tamanho temporal (pad/truncate)
+    n = seq.shape[0]
+    if n > expected_seq_len:
+        seq = seq[-expected_seq_len:]  # mantém as últimas N
+    elif n < expected_seq_len:
+        pad = np.zeros((expected_seq_len - n, 25), dtype=np.float32)
+        seq = np.vstack([pad, seq])
+
+    # 4) retorna com batch dimension
+    X = np.expand_dims(seq, axis=0)  # (1, T, 25)
+    return X
+
+def _prepare_inputs_for_model_meta(meta, ultimos_full):
+    """
+    Prepara X com one-hot de 25 features: (1, expected_seq_len, 25)
+    """
+    import numpy as np
+
+    def _one_hot_25(jogo):
+        v = np.zeros(25, dtype=np.float32)
+        for d in jogo:
+            try:
+                di = int(d)
+                if 1 <= di <= 25:
+                    v[di - 1] = 1.0
+            except Exception:
+                continue
+        return v
+
+    expected_seq_len = meta.get("expected_seq_len") or 50
+
+    seq = []
+    for jogo in ultimos_full:
+        try:
+            if "_to_binary" in globals() and _to_binary is not None:
+                seq.append(np.array(_to_binary(jogo), dtype=np.float32))
+            else:
+                seq.append(_one_hot_25(jogo))
+        except Exception:
+            seq.append(_one_hot_25(jogo))
+
+    seq = np.asarray(seq, dtype=np.float32)  # (n, 25)
+
+    if seq.shape[0] > expected_seq_len:
+        seq = seq[-expected_seq_len:]
+    elif seq.shape[0] < expected_seq_len:
+        pad = np.zeros((expected_seq_len - seq.shape[0], 25), dtype=np.float32)
+        seq = np.vstack([pad, seq])
+
+    return np.expand_dims(seq, axis=0)  # (1, T, 25)
+
+def _ultimos_sorteios_para_modelo(limit=50):
     try:
-        input_shape = meta.get("input_shape") or ()
-        expected_seq_len = meta.get("expected_seq_len") or 50
-        model_path = meta.get("path", "")
-        model_name = os.path.basename(model_path).lower()
-
-        # 🔍 Detecta o tipo de modelo (ls14, ls15, etc.)
-        if "ls14" in model_name:
-            n_features = 14
-        elif "ls15" in model_name:
-            n_features = 15
-        elif "ls17" in model_name:
-            n_features = 17
-        elif "ls20" in model_name:
-            n_features = 20
-        else:
-            n_features = input_shape[-1] if len(input_shape) > 1 else 15  # fallback
-
-        # 🔧 Corta ou ajusta o número de features conforme o modelo
-        seq = np.array(ultimos_full, dtype=np.float32)
-        if seq.shape[1] > n_features:
-            seq = seq[:, :n_features]
-        elif seq.shape[1] < n_features:
-            # padding com zeros se faltar coluna (evita erro de shape)
-            pad = np.zeros((seq.shape[0], n_features - seq.shape[1]), dtype=np.float32)
-            seq = np.concatenate([seq, pad], axis=1)
-
-        # 🔁 recorta para o expected_seq_len (últimas N amostras)
-        if seq.shape[0] > expected_seq_len:
-            seq = seq[-expected_seq_len:]
-
-        # reshape para (1, timesteps, features)
-        X = np.expand_dims(seq, axis=0)
-
-        return X
-
+        db = Session()
+        rows = db.execute(text("""
+            SELECT n1,n2,n3,n4,n5,n6,n7,n8,n9,n10,n11,n12,n13,n14,n15
+            FROM resultados_oficiais
+            ORDER BY data DESC
+            LIMIT :lim
+        """), {"lim": limit}).fetchall()
+        db.close()
+        if not rows:
+            return []
+        jogos = [[int(x) for x in row if x is not None] for row in rows]
+        return list(reversed([sorted(j) for j in jogos]))  # cronológico
     except Exception as e:
-        import logging
-        logging.warning(f"[prepare_inputs] falha ao preparar dados p/ {meta.get('path')}: {e}")
-        # fallback: tenta mínimo compatível
-        arr = np.asarray(ultimos_full, dtype=np.float32)
-        arr = arr[:, :14] if arr.shape[1] >= 14 else arr
-        return np.expand_dims(arr[-50:], axis=0)
+        logging.warning(f"[ultimos_sorteios_para_modelo] Falhou: {e}")
+        return []
 
 # ================================================================
 # BLOCO NOVO: CALIBRAÇÃO & PESOS (SOFTMAX + ENSEMBLE)
@@ -792,12 +1047,10 @@ def combinar_modelos_com_pesos(predicoes_por_grupo, temperature=1.0):
 
     _log_info(f"[Ensemble] Grupos={grupos_validos}, Pesos={weights}, Temp={temperature:.2f}")
     return final
-# ================================================================
 
 def ensemble_predict(models_list, X_inputs):
     if not models_list:
         raise ValueError("Nenhum modelo carregado para ensemble.")
-
     preds = []
     for entry in models_list:
         model_obj = entry
@@ -849,7 +1102,6 @@ def apply_temperature(p, T=1.0):
 
 # ================================================================
 # Utilitários para diversidade (Gumbel-top-k)
-# ================================================================
 
 def _sample_gumbel(shape, eps=1e-20):
     """Ruído Gumbel i.i.d para amostragem Top-K."""
@@ -868,7 +1120,6 @@ def _gumbel_top_k_sampling(probs, k=15, temperature=1.0):
     noisy = (logits + g) / float(temperature)
     topk = np.argsort(-noisy)[:k]
     return np.sort(topk + 1).tolist()
-
 
 def gerar_palpite_from_probs(
     probs,
@@ -908,10 +1159,8 @@ def gerar_palpite_from_probs(
     else:
         chosen_idxs = np.random.choice(np.arange(25), size=limite, replace=False, p=p)
         return np.sort(chosen_idxs + 1).tolist()
-
 # ================================================================
 # BLOCO NOVO: DIVERSIDADE — GUMBEL-TOP-K SAMPLER (OPCIONAL)
-# ================================================================
 
 def _sample_gumbel(shape, eps=1e-20):
     """Gera ruído Gumbel i.i.d para amostragem Top-K."""
@@ -959,7 +1208,6 @@ def gerar_palpite_from_probs_diverso(probs, limite=15, reinforce_threshold=0.06,
 
 # ================================================================
 # BLOCO NOVO: CONSTRAINTS SUAVES (paridade, consecutivos, distribuição)
-# ================================================================
 
 def _score_palpite_regras(palpite):
     """
@@ -1028,7 +1276,6 @@ def aplicar_constraints_suaves(palpite):
     if not use_constraints:
         return palpite
     return ajustar_palpite_por_regras(palpite)
-# ================================================================
 
 # ============ Bloco filha ===========================================
 
@@ -1158,7 +1405,7 @@ def gerar_palpite_estatistico(limite=15):
     finally:
         db.close()
 
-# -------------------- GERADORES ML (LS15 / LS14) --------------------
+# -------------------- GERADORES ML (LS16 / LS15 / LS14) --------------------
 
 def _model_paths_for(model_name: str, models_dir: str = None):
     """
@@ -1203,37 +1450,65 @@ def _model_paths_for(model_name: str, models_dir: str = None):
     logging.info(f"[_model_paths_for] Modelos encontrados para {model_name}: {encontrados}")
     return encontrados
 
+def _safe_dir_mtime(path):
+    try:
+        max_m = 0.0
+        for root, _, files in os.walk(path):
+            for f in files:
+                try:
+                    t = os.path.getmtime(os.path.join(root, f))
+                    if t > max_m:
+                        max_m = t
+                except Exception:
+                    pass
+        return max_m
+    except Exception:
+        return 0.0
+
 def carregar_modelo_ls(model_name: str, nome_plano=None, models_dir=None):
     """
-    Carrega todos os modelos disponíveis para LS14/LS15.
-    Não ignora modelos por tamanho da saída.
-    Retorna lista de dicts com 'model', 'path', 'expected_seq_len', 'tipo'.
+    Carrega modelos LS14/LS15 com cache por mtime da pasta.
     """
-    caminhos = _model_paths_for(model_name, models_dir=models_dir)
+    _lazy_imports()
+    if _tf_load_model is None:
+        logging.warning("[carregar_modelo_ls] TensorFlow indisponível; retornando vazio.")
+        return []
+
+    # resolve base
+    base = models_dir or MODELS_DIR
+    mtime = _safe_dir_mtime(base)
+    key = (model_name.lower(), os.path.abspath(base), mtime)
+
+    if key in _LOADED_METAS:
+        return _LOADED_METAS[key]
+
+    caminhos = _model_paths_for(model_name, models_dir=base)
     metas = []
 
     for path in caminhos:
         try:
-            model_obj = tf.keras.models.load_model(path)
-            output_shape = getattr(model_obj, 'output_shape', None)
-            expected_seq_len = output_shape[-1] if isinstance(output_shape, (tuple, list)) else None
-            tipo = os.path.basename(path).split("_")[0]  # regular/mid/global
-
+            model_obj = _tf_load_model(path, compile=False)
+            # inferir expected_seq_len
+            expected_seq_len = None
+            try:
+                if getattr(model_obj, "inputs", None):
+                    shp = model_obj.inputs[0].shape  # (None, T, F)
+                    if len(shp) >= 3 and int(shp[-1]) == 25:
+                        expected_seq_len = int(shp[-2])
+            except Exception:
+                pass
+            tipo = os.path.basename(path).split("_")[0]  # recent/mid/global
             metas.append({
                 "model": model_obj,
                 "path": path,
                 "tipo": tipo,
-                "expected_seq_len": expected_seq_len
+                "expected_seq_len": expected_seq_len or 50
             })
-
-            logging.info(f"[carregar_modelo_ls] Carregado: {path} (shape={expected_seq_len})")
-
+            logging.info(f"[carregar_modelo_ls] Carregado: {path} (expected_seq_len={expected_seq_len or 50})")
         except Exception as e:
             logging.warning(f"[carregar_modelo_ls] Falha ao carregar {path}: {e}")
-            continue
 
-    if not metas:
-        logging.warning(f"[carregar_modelo_ls] Nenhum modelo carregado para {model_name} (plano={nome_plano})")
+    _LOADED_METAS[key] = metas
     return metas
 
 def _load_and_filter_metas_for_plan(model_name, nome_plano, models_dir=None):
@@ -1244,68 +1519,64 @@ def _load_and_filter_metas_for_plan(model_name, nome_plano, models_dir=None):
     filtered = [m for m in metas if m.get("group") in allowed_groups or m.get("group") == "unknown"]
     return filtered
 
+def gerar_palpite_ls16_platinum(k=15):
+    """
+    Tenta primeiro o ensemble inteligente (modelo_llm_max/ensemble.py).
+    Se não der, usa o caminho atual baseado em scores_ls16 (LS15 + estatístico).
+    Retorna uma lista ordenada de dezenas (int).
+    """
+    # 1) Tenta o ensemble.py novo
+    if _fxb_ls16_ensemble is not None:
+        try:
+            dezenas = _fxb_ls16_ensemble()  # retorna ['01','07',...]
+            if dezenas and isinstance(dezenas, (list, tuple)):
+                dz_int = sorted({int(str(d).strip()) for d in dezenas})[:k]
+                dz_int = [x for x in dz_int if 1 <= x <= 25]
+                if len(dz_int) >= min(15, k):
+                    return sorted(dz_int[:k])
+        except Exception as e:
+            logging.warning(f"[LS16 ensemble] fallback por erro: {e}")
+
+    # 2) Fallback: usar seu pipeline atual (scores_ls16 -> amostragem)
+    s = scores_ls16(model_name_for_ensemble="LS15", w_neural=0.6, w_stats=0.4)
+    p = _amostrar_dezenas(s, k=k)
+    return sorted(p or gerar_palpite_estatistico(limite=k))
+
 def gerar_palpite_ls15(limite=15, models_dir=None):
-    USE_UNIFIED_ENGINE = True
-    if USE_UNIFIED_ENGINE:
-        nome_plano = st.session_state.usuario.get('nome_plano') if 'usuario' in st.session_state and st.session_state.usuario else None
-        res = gerar_palpite_ls("ls15", limite=limite, n_palites=1, nome_plano=nome_plano, models_dir=models_dir)
-        return res[0] if res else []
-
-    nome_plano = st.session_state.usuario.get('nome_plano') if 'usuario' in st.session_state and st.session_state.usuario else None
-    res = gerar_palpite_ls("ls15", limite=limite, n_palites=1, nome_plano=nome_plano, models_dir=models_dir)
-    return res[0] if res else []
+    """
+    Versão segura: 1) usa modelos cacheados, 2) prevê uma única vez,
+    3) fallback direto p/ estatístico, sem chamar gerar_palpite_ls() de novo.
+    """
     _lazy_imports()
-    if 'usuario' in st.session_state and st.session_state.usuario:
-        nome_plano = st.session_state.usuario.get('nome_plano')
-    metas = _load_and_filter_metas_for_plan("ls15", nome_plano, models_dir=models_dir)
+    metas = carregar_modelo_ls("ls15", None, models_dir=models_dir)
     if not metas:
-        st.error("Nenhum modelo LS15 disponível para seu plano. Use verificar_modelos() para diagnosticar onde estão os arquivos.")
-        return []
+        _log_warn("Nenhum modelo LS15 carregado — fallback estatístico.")
+        return gerar_palpite_estatistico(limite=limite)
 
-    max_window = max([m.get("expected_seq_len") or 0 for m in metas])
-    if not max_window or max_window <= 0:
-        max_window = 1550
-
-    db = Session()
-    try:
-        rows = db.execute(text(f"""
-            SELECT n1,n2,n3,n4,n5,n6,n7,n8,n9,n10,
-                   n11,n12,n13,n14,n15
-            FROM resultados_oficiais
-            ORDER BY data DESC
-            LIMIT :lim
-        """), {"lim": int(max_window)}).fetchall()
-    finally:
-        db.close()
-
-    if not rows:
-        st.error("Não há histórico suficiente para gerar palpites LS15.")
-        return []
-
-    ultimos_full = [list(r) for r in reversed(rows)]
+    # prepara janela única (50 por padrão)
+    T = max((m.get("expected_seq_len") or 50) for m in metas) or 50
+    ultimos = _ultimos_sorteios_para_modelo(limit=T)
 
     preds = []
     for meta in metas:
         try:
-            X = _prepare_inputs_for_model_meta(meta, ultimos_full)
-            m = meta["model"]
-            p = m.predict(X, verbose=0)
-            if isinstance(p, (list, tuple)):
-                p = p[0]
+            X = _prepare_inputs_for_model_meta(meta, ultimos)
+            p = meta["model"].predict(X, verbose=0)
             p = np.asarray(p, dtype=np.float32)
-            if p.ndim == 1:
-                p = p.reshape(1, -1)
-            preds.append(p)
+            if p.ndim > 1:
+                p = p.reshape(-1)
+            if p.size == 25:
+                preds.append(p)
         except Exception as e:
-            _log_warn(f"Predição falhou para um dos modelos do ensemble (path={meta.get('path')}): {e}")
+            _log_warn(f"Predição falhou para LS15 ({meta.get('path')}): {e}")
 
     if not preds:
-        st.error("Nenhuma predição válida obtida dos modelos LS15.")
-        return []
+        _log_warn("Nenhuma predição válida LS15 — fallback estatístico.")
+        return gerar_palpite_estatistico(limite=limite)
 
-    mean_pred = np.mean(preds, axis=0)[0]
-    idx = np.argsort(-mean_pred)[:limite]
-    return np.sort(idx + 1).tolist()
+    mean_pred = _normalize_probs(np.mean(np.vstack(preds), axis=0))
+    palpite = gerar_palpite_from_probs(mean_pred, limite=limite, deterministic=False)
+    return sorted(palpite)
 
 def gerar_palpite_ls14(limite=14, models_dir=None):
     """
@@ -1347,7 +1618,7 @@ def historico_palpites():
     # ==============================
     col1, col2, col3 = st.columns([1.2, 1, 1])
     with col1:
-        opcoes_modelo = ["Todos", "Aleatório", "Estatístico", "Ímpares-Pares", "LS15", "LS14"]
+        opcoes_modelo = ["Todos", "Aleatório", "Estatístico", "Ímpares-Pares", "LS15", "LS14","LS16"]
         filtro_modelo = st.selectbox("🔢 Modelo de Palpite:", opcoes_modelo)
 
     with col2:
@@ -1460,6 +1731,25 @@ def _safe_rerun():
     except AttributeError:
         st.experimental_rerun()  # compatibilidade com versões antigas
 
+def _normalize_probs(vec, eps=1e-12):
+    """
+    Normaliza vetor de pesos garantindo:
+      - sem NaN/Inf
+      - soma > 0
+    Se falhar, retorna uniforme (25) para Lotofácil.
+    """
+    v = np.asarray(vec, dtype=float)
+    if not np.all(np.isfinite(v)):
+        v = np.nan_to_num(v, nan=0.0, posinf=0.0, neginf=0.0)
+    s = v.sum()
+    if s <= 0:
+        # uniforme de 25 posições (Lotofácil)
+        return np.ones(25, dtype=float) / 25.0
+    v = v / s
+    # sanidade final
+    if not np.all(np.isfinite(v)):
+        return np.ones(25, dtype=float) / 25.0
+    return v
 
 # 🔹 Função para atualizar o status do palpite no banco
 def _validar_no_banco(pid: int):
@@ -1474,7 +1764,6 @@ def _validar_no_banco(pid: int):
         st.error(f"Erro ao validar: {e}")
     finally:
         db.close()
-
 
 # 🔹 Função principal
 def validar_palpite():
@@ -1570,7 +1859,6 @@ def validar_palpite():
             st.caption("✅ Já validado")
 
     st.markdown('</div>', unsafe_allow_html=True)
-
 
 def gerar_palpite_ls(modelo: str, limite=15, n_palites=1, nome_plano=None, models_dir=None):
     """
@@ -1677,7 +1965,8 @@ def gerar_palpite_ls(modelo: str, limite=15, n_palites=1, nome_plano=None, model
             mean_pred = mean_pred.reshape(-1)
 
     # garante que mean_pred seja não-negativo e normalize para soma 1 (probabilidades)
-    mean_pred = np.clip(mean_pred, 1e-12, None)
+    mean_pred = _normalize_probs(np.clip(mean_pred, 1e-12, None))
+
     if mean_pred.sum() <= 0:
         mean_pred = np.ones(25, dtype=np.float32) / 25.0
     else:
@@ -1701,6 +1990,241 @@ def gerar_palpite_ls(modelo: str, limite=15, n_palites=1, nome_plano=None, model
     _log_info(f"[gerar_palpite_ls] modelo={modelo} metas_total={len(metas)} metas_usadas={len(preds)} ignorados={len(skipped_models)}")
 
     return palpites
+
+# ================== [PLAN RULES] ==================
+
+def gerar_para_plano(nome_plano: str, qtd: int = 3, k_escolhido: int = None):
+    """
+    nome_plano: "Free" | "Silver" | "Gold" | "Platinum"
+    k_escolhido: número de dezenas solicitado (respeita faixa do plano)
+    """
+    nome = (nome_plano or "").strip().lower()
+
+    if nome == "free":
+        k = 15
+        modelo = "ESTAT"
+
+    elif nome == "silver":
+        k = k_escolhido or 15
+        k = max(15, min(17, k))
+        modelo = "LS14"
+
+    elif nome == "gold":
+        k = k_escolhido or 15
+        k = max(15, min(20, k))
+        modelo = "LS15"
+
+    elif nome == "platinum":
+        # para você testar internamente agora
+        k = k_escolhido or 15
+        k = max(15, min(20, k))
+        modelo = "LS16"
+
+    else:
+        # default seguro
+        k = 15
+        modelo = "ESTAT"
+
+    palpites = gerar_palpites_por_modelo(modelo=modelo, qtd=qtd, k=k)
+    return modelo, k, palpites
+
+
+# ================== [GENERATOR CORE] ==================
+def _amostrar_dezenas(scores_25, k=15, correl_steps=10, pares_range=(6,9)):
+    usados = combinacoes_ja_sorteadas()
+    dezenas = list(range(1, 26))
+
+    base_weights = _normalize_probs(scores_25)
+
+    for _ in range(5000):
+        base = set(random.choices(dezenas, weights=base_weights, k=min(5, k)))
+        atual = set(base)
+
+        for _step in range(correl_steps):
+            if len(atual) >= k:
+                break
+            aff = scores_correlacao(atual)
+            mixed = _normalize_probs(0.5*aff + 0.5*base_weights)
+            prox = random.choices(dezenas, weights=mixed, k=1)[0]
+            atual.add(prox)
+
+        while len(atual) < k:
+            prox = random.choices(dezenas, weights=base_weights, k=1)[0]
+            atual.add(prox)
+
+        comb = sorted(atual)
+        if tuple(comb) in usados:
+            continue
+        pares = sum(1 for d in comb if d % 2 == 0)
+        if not (pares_range[0] <= pares <= pares_range[1]):
+            continue
+        return comb
+
+    return None
+
+def gerar_palpites_por_modelo(modelo: str, qtd: int = 3, k: int = 15):
+    """
+    Gera palpites conforme o modelo especificado.
+    - LS14 / LS15 usam redes neurais locais.
+    - LS16 tenta o ensemble inteligente (modelo_llm_max/ensemble.py) e,
+      se falhar, faz fallback para scores_ls16.
+    - Demais modelos usam o método estatístico.
+    """
+    modelo = (modelo or "ESTAT").upper()
+
+    # -----------------------------
+    # LS14 → Rede neural pura
+    # -----------------------------
+    if modelo == "LS14":
+        s = scores_neurais("LS14")
+        if s.sum() == 0:
+            s = scores_estatisticos()
+
+    # -----------------------------
+    # LS15 → Rede neural pura
+    # -----------------------------
+    elif modelo == "LS15":
+        s = scores_neurais("LS15")
+        if s.sum() == 0:
+            s = scores_estatisticos()
+
+    # -----------------------------
+    # LS16 → Ensemble inteligente (Platinum)
+    # -----------------------------
+    elif modelo == "LS16":
+        try:
+            if _fxb_ls16_ensemble is None:
+                raise RuntimeError("ensemble LS16 indisponível (import falhou).")
+
+            palpites = _fxb_ls16_ensemble()
+
+            # Exibir no Streamlit (se disponível)
+            if "st" in globals():
+                st.markdown("### 💎 Palpites LS16 (Platinum — Ensemble com Diversidade)")
+                for i, p in enumerate(palpites, 1):
+                    dezenas_txt = " ".join(f"{x:02d}" for x in p)
+                    st.markdown(f"**Palpite {i:02d}:** {dezenas_txt}")
+                st.info(f"📦 Total gerado: {len(palpites)} palpites diversificados")
+
+            return [list(map(int, p)) for p in palpites]
+
+        except Exception as e:
+            _log_warn(f"[LS16 ensemble] Falhou → fallback p/ LS15: {e}")
+
+            # 🔸 Fallback: mistura LS15 + estatístico
+            palpites = []
+            vistos = set()
+            faltam = qtd
+            s = scores_ls16(model_name_for_ensemble="LS15", w_neural=0.6, w_stats=0.4)
+            tries = 0
+            while len(palpites) < faltam and tries < 8000:
+                tries += 1
+                p = _amostrar_dezenas(s, k=k)
+                if not p:
+                    continue
+                tp = tuple(sorted(p))
+                if tp in vistos:
+                    continue
+                vistos.add(tp)
+                palpites.append(p)
+
+            return palpites
+
+    # -----------------------------
+    # Qualquer outro modelo → Estatístico
+    # -----------------------------
+    else:
+        s = scores_estatisticos()
+
+    # -----------------------------
+    # Geração de palpites padrão (LS14, LS15 ou Estatístico)
+    # -----------------------------
+    palpites = []
+    tent = 0
+    while len(palpites) < qtd and tent < 8000:
+        p = _amostrar_dezenas(s, k=k)
+        if p:
+            palpites.append(p)
+        tent += 1
+
+    return palpites
+
+
+
+# ---------- [GENERATOR] unificado por plano ----------
+#Gerador de palpites com regras por plano (Free/Silver/Gold/Platinum) 23/10/2025
+
+@lru_cache(maxsize=4)
+def _score_from_ls(model_name: str):
+    """
+    Obtém 25 scores do modelo neural via amostragem:
+    1) Chama o gerador LS14/LS15 local N vezes e calcula frequência por dezena.
+    2) Se falhar, retorna zeros (cai no estatístico/ensemble).
+    """
+    try:
+        # usa as funções locais se já existem neste módulo:
+        if model_name.upper() == "LS14" and 'gerar_palpite_ls14' in globals():
+            return _score_from_ls_via_amostragem(globals()['gerar_palpite_ls14'], amostras=200)
+
+        if model_name.upper() == "LS15" and 'gerar_palpite_ls15' in globals():
+            return _score_from_ls_via_amostragem(globals()['gerar_palpite_ls15'], amostras=200)
+
+    except Exception as e:
+        print(f"⚠️ Falha ao amostrar {model_name}: {e}")
+
+    # fallback neutro → força uso do estatístico/ensemble
+    return np.zeros(25, dtype=float)
+
+# 23/10 sera q estamos usanso esse def : gerar_palpites_por_modelo - apaguei PRECISO VOLTAR
+
+# ---------- [PLAN RULES] — Free / Silver / Gold / Platinum ----------
+def _modelo_e_k_por_plano(nome_plano: str, k_escolhido: int | None):
+    nome = (nome_plano or "").strip().lower()
+    if nome == "free":
+        return "ESTAT", 15
+    elif nome == "silver":
+        k = k_escolhido or 15
+        return "LS14", max(15, min(17, k))
+    elif nome == "gold":
+        k = k_escolhido or 15
+        return "LS15", max(15, min(20, k))
+    elif nome == "platinum":
+        k = k_escolhido or 15
+        return "LS16", max(15, min(20, k))
+    else:
+        return "ESTAT", 15
+
+def gerar_para_plano(nome_plano: str, qtd: int = 3, k_escolhido: int | None = None):
+    modelo, k = _modelo_e_k_por_plano(nome_plano, k_escolhido)
+    palpites = gerar_palpites_por_modelo(modelo=modelo, qtd=qtd, k=k)
+    return modelo, k, palpites
+
+def _produto_copy_modelo(modelo_key: str) -> tuple[str, str]:
+    """
+    Retorna (nome_exibicao, copy_curta) para o modelo.
+    """
+    m = (modelo_key or "").upper()
+    if m in ("ALEATÓRIO", "ALEATORIO", "RANDOM"):
+        return ("Aleatório", "Combinações aleatórias equilibradas.")
+    if m in ("ESTAT", "ESTATÍSTICO", "ESTATISTICO"):
+        return ("Estatístico Inteligente", "Frequência histórica + recência + correlação (coocorrência).")
+    if m == "LS14":
+        return ("IA Neural v14", "Padrões avançados aprendidos com janela reduzida.")
+    if m == "LS15":
+        return ("IA Neural v15", "Padrões avançados + robustez temporal (ensemble).")
+    if m == "LS16":
+        return ("IA Híbrida LS16", "Ensemble Neural + Estatística (o melhor dos dois mundos).")
+    return (modelo_key, "")
+
+def _render_badge_modelo(modelo_key: str, k_final: int | None = None):
+    nome, copy = _produto_copy_modelo(modelo_key)
+    k_txt = f" · {k_final} dezenas" if k_final else ""
+    st.markdown(f"""
+    <div style="margin:8px 0 12px 0; padding:8px 12px; border:1px solid #0a0; border-radius:10px; background:#f5fff5;">
+        <div style="font-weight:700; color:#0a0;">{nome}{k_txt}</div>
+        <div style="font-size:13px; color:#333;">{copy}</div>
+    </div>
+    """, unsafe_allow_html=True)
 
 # ================================================================
 # Modal FaixaBet — versão estável e funcional (sem congelar tela)
@@ -1760,98 +2284,99 @@ def exibir_modal_palpites(palpites_gerados):
     fallback_height = max(400, min(1100, 240 + rows * 100))
 
     html = f"""
+
 <!DOCTYPE html>
 <html>
-<head>
-<meta charset="utf-8" />
-<style>
-:root {{
-  --brand: #07a507;
-  --bg-dim: rgba(0,0,0,.45);
-}}
-html, body {{
-  margin:0; padding:0; font-family: system-ui, 'Segoe UI', Roboto, Arial, sans-serif;
-  background: transparent;
-}}
-.overlay {{
-  position: fixed; inset:0; background: var(--bg-dim);
-  display:flex; align-items:center; justify-content:center;
-}}
-.modal {{
-  position: relative;
-  width: min(940px, 94vw);
-  max-height: 88vh; overflow:auto;
-  background:#fff; border:2px solid var(--brand);
-  border-radius:16px; box-shadow:0 10px 30px rgba(0,0,0,.25);
-  padding:20px 22px;
-}}
-.close {{
-  position:absolute; top:10px; right:14px;
-  border:0; background:none; color:var(--brand);
-  font-size:24px; cursor:pointer;
-}}
-h3 {{ text-align:center; color:var(--brand); margin:6px 0 10px; }}
-.msg {{ text-align:center; margin:4px 0 14px; font-weight:600; }}
-.grid {{
-  display:grid; gap:12px;
-  grid-template-columns: repeat(auto-fit, minmax(260px,1fr));
-}}
-.palpite-card {{
-  background:#eaffe9; border:2px solid var(--brand);
-  border-radius:12px; padding:8px 10px;
-  word-wrap:break-word; overflow-wrap:break-word;
-}}
-.palpite-num {{ color:var(--brand); font-weight:700; margin-bottom:4px; }}
-.palpite-dezenas {{
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size:14px; color:#000; line-height:1.4;
-  white-space:normal;
-}}
-.tip {{
-  margin-top:14px; text-align:center; color:#555; font-size:13px;
-}}
-</style>
-</head>
-<body>
-<div class="overlay" id="fxb-overlay">
-  <div class="modal" role="dialog" aria-modal="true">
-    <button class="close" id="fxb-close" title="Fechar">✕</button>
-    <h3>Palpites Gerados</h3>
-    <div class="msg">Hoje é o dia certo para apostar!</div>
-    <div class="grid">{cards_html}</div>
-    <div class="tip">💡 Selecione e copie os números (Ctrl+C) para colar onde quiser.</div>
-  </div>
-</div>
-<script>
-(function(){{
-  const iframe = window.frameElement;
-  function lockScroll(lock){{
-    const pd = window.parent.document;
-    const ht = pd.documentElement, bd = pd.body;
-    if(lock){{ ht.style.overflow='hidden'; bd.style.overflow='hidden'; }}
-    else{{ ht.style.overflow=''; bd.style.overflow=''; }}
-  }}
-  function closeModal(){{
-    if(!iframe) return;
-    lockScroll(false);
-    iframe.remove();
-  }}
-  if(iframe){{
-    iframe.style.position='fixed';
-    iframe.style.top='0'; iframe.style.left='0';
-    iframe.style.width='100vw'; iframe.style.height='100vh';
-    iframe.style.zIndex='999999'; iframe.style.background='transparent';
-    lockScroll(true);
-    document.getElementById('fxb-close').onclick=closeModal;
-    document.getElementById('fxb-overlay').onclick=(e)=>{{ if(e.target.id==='fxb-overlay') closeModal(); }};
-    window.onkeydown=(e)=>{{ if(e.key==='Escape') closeModal(); }};
-  }}
-}})();
-</script>
-</body>
+    <head>
+        <meta charset="utf-8" />
+        <style>
+            :root {{
+            --brand: #07a507;
+            --bg-dim: rgba(0,0,0,.45);
+            }}
+            html, body {{
+            margin:0; padding:0; font-family: system-ui, 'Segoe UI', Roboto, Arial, sans-serif;
+            background: transparent;
+            }}
+            .overlay {{
+            position: fixed; inset:0; background: var(--bg-dim);
+            display:flex; align-items:center; justify-content:center;
+            }}
+            .modal {{
+            position: relative;
+            width: min(940px, 94vw);
+            max-height: 88vh; overflow:auto;
+            background:#fff; border:2px solid var(--brand);
+            border-radius:16px; box-shadow:0 10px 30px rgba(0,0,0,.25);
+            padding:20px 22px;
+            }}
+            .close {{
+            position:absolute; top:10px; right:14px;
+            border:0; background:none; color:var(--brand);
+            font-size:24px; cursor:pointer;
+            }}
+            h3 {{ text-align:center; color:var(--brand); margin:6px 0 10px; }}
+            .msg {{ text-align:center; margin:4px 0 14px; font-weight:600; }}
+            .grid {{
+            display:grid; gap:12px;
+            grid-template-columns: repeat(auto-fit, minmax(260px,1fr));
+            }}
+            .palpite-card {{
+            background:#eaffe9; border:2px solid var(--brand);
+            border-radius:12px; padding:8px 10px;
+            word-wrap:break-word; overflow-wrap:break-word;
+            }}
+            .palpite-num {{ color:var(--brand); font-weight:700; margin-bottom:4px; }}
+            .palpite-dezenas {{
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size:14px; color:#000; line-height:1.4;
+            white-space:normal;
+            }}
+            .tip {{
+            margin-top:14px; text-align:center; color:#555; font-size:13px;
+            }}
+        </style>
+    </head>
+
+    <body>
+        <div class="overlay" id="fxb-overlay">
+        <div class="modal" role="dialog" aria-modal="true">
+            <button class="close" id="fxb-close" title="Fechar">✕</button>
+            <h3>Palpites Gerados</h3>
+            <div class="msg">Hoje é o dia certo para apostar!</div>
+            <div class="grid">{cards_html}</div>
+            <div class="tip">💡 Selecione e copie os números (Ctrl+C) para colar onde quiser.</div>
+        </div>
+        </div>
+        <script>
+            (function(){{
+            const iframe = window.frameElement;
+            function lockScroll(lock){{
+                const pd = window.parent.document;
+                const ht = pd.documentElement, bd = pd.body;
+                if(lock){{ ht.style.overflow='hidden'; bd.style.overflow='hidden'; }}
+                else{{ ht.style.overflow=''; bd.style.overflow=''; }}
+            }}
+            function closeModal(){{
+                if(!iframe) return;
+                lockScroll(false);
+                iframe.remove();
+            }}
+            if(iframe){{
+                iframe.style.position='fixed';
+                iframe.style.top='0'; iframe.style.left='0';
+                iframe.style.width='100vw'; iframe.style.height='100vh';
+                iframe.style.zIndex='999999'; iframe.style.background='transparent';
+                lockScroll(true);
+                document.getElementById('fxb-close').onclick=closeModal;
+                document.getElementById('fxb-overlay').onclick=(e)=>{{ if(e.target.id==='fxb-overlay') closeModal(); }};
+                window.onkeydown=(e)=>{{ if(e.key==='Escape') closeModal(); }};
+            }}
+            }})();
+        </script>
+    </body>
 </html>
     """
-
     components.html(html, height=fallback_height, scrolling=False)
 
 # -------------------- UI / CORE - GENERATION --------------------
@@ -1897,7 +2422,6 @@ def gerar_palpite_ui():
     """,
     unsafe_allow_html=True
 )
-
     # Verifica limite de palpites
     permitido, nome_plano_verif, palpites_restantes = verificar_limite_palpites(id_usuario)
     if not permitido:
@@ -1906,21 +2430,34 @@ def gerar_palpite_ui():
         return
 
     # Define modelos e limites de dezenas por plano
+        # --- Definição de planos e modelos ---
+    # --- Definição de planos e modelos ---
+        # --- Definição de planos e modelos ---
     plano_clean = nome_plano.lower()
+
     if plano_clean == "free":
-        modelos_disponiveis = ["Aleatório"]
+        modelos_disponiveis = ["Aleatório", "Estatístico"]
         min_dezenas, max_dezenas = 15, 15
+
     elif plano_clean == "silver":
         modelos_disponiveis = ["Estatístico", "Pares/Ímpares", "LS14"]
         min_dezenas, max_dezenas = 15, 17
+
     elif plano_clean == "gold":
         modelos_disponiveis = ["Estatístico", "Pares/Ímpares", "LS14", "LS15"]
         min_dezenas, max_dezenas = 15, 20
+
+    elif plano_clean == "platinum":
+        # 🔮 novo plano usando LS16
+        modelos_disponiveis = ["LS16 (Híbrido AI)"]
+        min_dezenas, max_dezenas = 15, 20
+
     else:
         modelos_disponiveis = ["Aleatório"]
         min_dezenas, max_dezenas = 15, 15
 
-    modelo = st.selectbox("Modelos disponiveis para o plano:", modelos_disponiveis, key="select_modelo")
+    # --- Seletores UI ---
+    modelo = st.selectbox("Modelos disponíveis:", modelos_disponiveis, key="select_modelo")
     qtde_dezenas = st.number_input(
         "Quantas dezenas por palpite?",
         min_value=min_dezenas, max_value=max_dezenas,
@@ -1932,142 +2469,85 @@ def gerar_palpite_ui():
         value=1, step=1, key="num_palpites"
     )
 
-        # --- CSS do botão estilizado ---
-    # --- CSS do botão (verde, largo e fonte grande) ---
-    st.markdown("""
-        <style>
-        /* --- Estilo base: mobile first --- */
-        [data-testid="stButton"] {
-            display: flex !important;
-            justify-content: center !important;  /* 🔹 centraliza horizontalmente */
-            align-items: center !important;
-            width: 100% !important;
-        }
-
-        [data-testid="stButton"] button {
-            background-color: #009900 !important;
-            color: #ffffff !important;
-            font-size: 24px !important;
-            font-weight: 700 !important;
-            border: none !important;
-            border-radius: 12px !important;
-            padding: 16px 24px !important;
-            width: 100% !important;              /* ocupa toda a largura no mobile */
-            max-width: 340px !important;         /* limite visual */
-            box-shadow: none !important;
-            transition: all .2s ease-in-out;
-        }
-
-        /* Texto dentro do botão */
-        [data-testid="stButton"] button p {
-            font-size: 26px !important;
-            font-weight: 700 !important;
-            margin: 0 !important;
-        }
-
-        /* Hover e click */
-        [data-testid="stButton"] button:hover {
-            background-color: #00b300 !important;
-            transform: scale(1.03);
-        }
-        [data-testid="stButton"] button:active {
-            background-color: #007a00 !important;
-        }
-
-        /* --- Ajuste para telas maiores (desktop/tablet) --- */
-        @media (min-width: 768px) {
-            [data-testid="stButton"] button {
-                width: 320px !important;         /* largura fixa */
-            }
-        }
-        </style>
-        """, unsafe_allow_html=True)
-
-        # botão único, sem duplicar key
     clicked = st.button("Gerar Palpites", key="btn_gerar_palpites_ui")
     if not clicked:
-       return
-
+        return
 
     palpites_gerados = []
     tentativas = set()
+    try:
+        if plano_clean == "platinum" or modelo.startswith("LS16"):
+            # 🔥 novo fluxo híbrido: usa nossa API por plano
+            modelo_usado, k_final, bets = gerar_para_plano("Platinum", qtd=int(num_palpites), k_escolhido=int(qtde_dezenas))
+            _render_badge_modelo(modelo_usado, k_final)
 
-    # LS14 predição para priorizar LS15
-    ls14_prior = []
-    if plano_clean == "gold" and modelo == "LS15":
-        ls14_prior_list = gerar_palpite_ls(
-            "ls14", limite=15, n_palites=1, nome_plano=nome_plano, models_dir=MODELS_DIR
-        )
-        ls14_prior = ls14_prior_list[0] if ls14_prior_list and len(ls14_prior_list) > 0 else []
-        logging.info(f"[gerar_palpite_ui] LS14_prior: {ls14_prior}")
+            for palpite in bets:
+                if not palpite:
+                    continue
+                tpl = tuple(palpite)
+                if tpl not in tentativas:
+                    tentativas.add(tpl)
+                    palpite_id = salvar_palpite(palpite, modelo_usado)
+                    atualizar_contador_palpites(id_usuario)
+                    palpites_gerados.append({"id": palpite_id, "numeros": palpite})
 
-    # Loop de geração de palpites
-    for _ in range(num_palpites):
-        try:
-            if modelo == "Aleatório":
-                palpite = sorted(random.sample(range(1, 26), qtde_dezenas))
-            elif modelo == "Estatístico":
-                palpite = gerar_palpite_estatistico(limite=qtde_dezenas)
-            elif modelo == "Pares/Ímpares":
-                palpite = gerar_palpite_pares_impares(limite=qtde_dezenas)
-            elif modelo == "LS14":
-                palpite_list = gerar_palpite_ls(
-                    "ls14", limite=qtde_dezenas, n_palites=1,
-                    nome_plano=nome_plano, models_dir=MODELS_DIR
+        else:
+            # ⚙️ fluxo original preservado para Free/Silver/Gold
+            ls14_prior = []
+            if plano_clean == "gold" and modelo == "LS15":
+                ls14_prior_list = gerar_palpite_ls(
+                    "ls14", limite=15, n_palites=1, nome_plano=nome_plano, models_dir=MODELS_DIR
                 )
-                palpite = palpite_list[0] if palpite_list and len(palpite_list) > 0 else sorted(random.sample(range(1, 26), qtde_dezenas))
-                if not palpite_list:
-                    logging.warning("[gerar_palpite_ui] Fallback LS14 aplicado")
-            elif modelo == "LS15":
-                palpite_list = gerar_palpite_ls(
-                    "ls15", limite=qtde_dezenas, n_palites=1,
-                    nome_plano=nome_plano, models_dir=MODELS_DIR
-                )
-                palpite = palpite_list[0] if palpite_list and len(palpite_list) > 0 else sorted(random.sample(range(1, 26), qtde_dezenas))
-                if not palpite_list:
-                    logging.warning("[gerar_palpite_ui] Fallback LS15 aplicado")
+                ls14_prior = ls14_prior_list[0] if ls14_prior_list else []
 
-                # prioriza LS14 para Gold
-                if ls14_prior:
-                    intersec = list(set(palpite) & set(ls14_prior))
-                    extras = [x for x in ls14_prior if x not in intersec]
-                    for x in extras:
-                        if len(intersec) < qtde_dezenas:
-                            intersec.append(x)
-                    for x in range(1, 26):
-                        if len(intersec) < qtde_dezenas and x not in intersec:
-                            intersec.append(x)
-                    palpite = sorted(intersec[:qtde_dezenas])
+            # mostra badge coerente com modelo escolhido
+            modelo_chave = "ESTAT" if modelo == "Estatístico" else ("LS14" if modelo == "LS14" else ("LS15" if modelo == "LS15" else "Aleatório"))
+            _render_badge_modelo(modelo_chave, int(qtde_dezenas))
 
-            # adiciona palpite único
-            tpl = tuple(palpite)
-            if tpl not in tentativas:
-                tentativas.add(tpl)
-                palpite_id = salvar_palpite(palpite, modelo)
-                atualizar_contador_palpites(id_usuario)
+            for _ in range(int(num_palpites)):
+                if modelo == "Aleatório":
+                    palpite = sorted(random.sample(range(1, 26), int(qtde_dezenas)))
+                elif modelo == "Estatístico":
+                    palpite = gerar_palpite_estatistico(limite=int(qtde_dezenas))
+                elif modelo == "Pares/Ímpares":
+                    palpite = gerar_palpite_pares_impares(limite=int(qtde_dezenas))
+                elif modelo == "LS14":
+                    palpite_list = gerar_palpite_ls(
+                        "ls14", limite=int(qtde_dezenas), n_palites=1,
+                        nome_plano=nome_plano, models_dir=MODELS_DIR
+                    )
+                    palpite = palpite_list[0] if palpite_list else sorted(random.sample(range(1, 26), int(qtde_dezenas)))
+                elif modelo == "LS15":
+                    palpite_list = gerar_palpite_ls(
+                        "ls15", limite=int(qtde_dezenas), n_palites=1,
+                        nome_plano=nome_plano, models_dir=MODELS_DIR
+                    )
+                    palpite = palpite_list[0] if palpite_list else sorted(random.sample(range(1, 26), int(qtde_dezenas)))
 
-            if palpite_id:
-                palpites_gerados.append({"id": palpite_id, "numeros": palpite})
-                logging.info(f"[gerar_palpite_ui] Palpite gerado (ID={palpite_id}): {palpite}")
+                    if ls14_prior:
+                        intersec = list(set(palpite) & set(ls14_prior))
+                        extras = [x for x in ls14_prior if x not in intersec]
+                        for x in extras:
+                            if len(intersec) < int(qtde_dezenas):
+                                intersec.append(x)
+                        for x in range(1, 26):
+                            if len(intersec) < int(qtde_dezenas) and x not in intersec:
+                                intersec.append(x)
+                        palpite = sorted(intersec[:int(qtde_dezenas)])
 
-
-        except Exception as e:
-            st.error(f"Erro ao gerar palpite: {e}")
-            logging.error(f"[gerar_palpite_ui] Erro ao gerar palpite: {e}")
-
-    # Exibe resultados
+                tpl = tuple(palpite)
+                if tpl not in tentativas:
+                    tentativas.add(tpl)
+                    palpite_id = salvar_palpite(palpite, modelo if modelo in ("Aleatório", "Pares/Ímpares", "Estatístico") else modelo)
+                    atualizar_contador_palpites(id_usuario)
+                    palpites_gerados.append({"id": palpite_id, "numeros": palpite})
+    except Exception as e:
+        st.error(f"Erro ao gerar palpite: {e}")
+        logging.error(f"[gerar_palpite_ui] Falha: {e}")
+        return
+    # --- saída visual (igual) ---
     if palpites_gerados:
         st.success(f"{len(palpites_gerados)} palpites gerados com sucesso!")
-
-        # ✅ Modal bonita (3 colunas × 4 linhas + scroll + botão X)
         exibir_modal_palpites(palpites_gerados)
-
-        # (Opcional) Listagem simples abaixo da modal:
-        # for p in palpites_gerados:
-        #     st.write(", ".join(f"{d:02d}" for d in p))
-
     else:
         st.warning("Nenhum palpite foi gerado.")
-        logging.warning("[gerar_palpite_ui] Nenhum palpite gerado após todas as tentativas.")
-
-

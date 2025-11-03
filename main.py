@@ -1,4 +1,4 @@
-# main v8.007
+# main v8.10
 # -------------------- [1] IMPORTS --------------------
 
 import os,secrets,smtplib, requests,base64
@@ -21,6 +21,15 @@ from financeiro import exibir_aba_financeiro
 
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+import threading
+from email_api import app as flask_app
+
+def run_flask():
+    flask_app.run(host="0.0.0.0", port=8502, debug=False, use_reloader=False)
+
+threading.Thread(target=run_flask, daemon=True).start()
+
+
 # -------------------- [2] CONFIGS --------------------
 
 st.set_page_config(page_title="fAIxaBet", layout="centered")
@@ -30,17 +39,26 @@ st.markdown("""
         width: 100%; 
         text-align: center; 
         padding: 6px 0; 
-        font-size: 46px; 
+        font-size: 44px; 
         font-weight: bold; 
         color: green;
         border-bottom: 1px solid #DDD;
     '>Bem-vindo à fAIxaBet®
         <hr style="margin: 0; border: 0; border-top: 1px solid #DDD;">
-        <div style='text-align:center; font-size:16px; color:black; margin-top:4px;'>
-             Aqui Não é Sorte   •      é  AI
+        <div style='text-align:center; font-size:19px; color:black; margin-top:4px;'>
+            O Futuro da Loteria é Prever
         </div>
     </div>
 """, unsafe_allow_html=True)
+
+#  "🔹 Sorte é Aleatória. Aqui é Inteligência.",
+#  "Previsões baseadas em dados reais.",
+#  "O Futuro da Loteria é Prever.",
+#  "Gere seus palpites com o poder da IA.",
+#  "FaixaBet — Onde os Números Pensam.",
+#  "Inteligência. Não sorte."
+
+
 
 # -------------------- [3] DEFINIÇÃO DE FUNÇÕES --------------------
 
@@ -343,7 +361,6 @@ def gerar_token_recuperacao(user_id, db):
         st.error(f"Erro ao gerar token de recuperação: {e}")
         return None
 
-
 # =========================================================
 # Função para verificar senha hashPasswordPBKDF2 e
 # =========================================================
@@ -437,8 +454,27 @@ if not st.session_state.get("logged_in", False):
             with st.form("login_form"):
                 usuario_input = st.text_input("Usuário")
                 senha_input = st.text_input("Senha", type="password")
-                submitted = st.form_submit_button("Conectar")
-                
+
+                # CSS para o botão Conectar
+                st.markdown("""
+                    <style>
+                        div.stButton > button:first-child {
+                            width: 100% !important;
+                            background-color: #469536 !important;
+                            color: white !important;
+                            font-weight: 600 !important;
+                            border: none !important;
+                            border-radius: 6px !important;
+                            height: 48px !important;
+                        }
+                        div.stButton > button:hover {
+                            background-color: #3c7e2d !important;
+                        }
+                    </style>
+                """, unsafe_allow_html=True)
+
+                submitted = st.form_submit_button("Conectar", use_container_width=True)
+               
                 if submitted:
                     db = Session()
                     sucesso_login = False
@@ -515,9 +551,27 @@ if not st.session_state.get("logged_in", False):
                         st.rerun()
 
             # === Botão de Recuperação ===
-            if st.button("Esqueceu a senha?"):
-                st.session_state.recover_step = 1
-                st.rerun()
+            # === Botão de Recuperação (corrigido) ===
+            st.markdown("""
+                <style>
+                .forgot-btn button {
+                    color: #469536 !important;
+                    background: none !important;
+                    border: none !important;
+                    font-weight: 500 !important;
+                    text-decoration: underline !important;
+                    cursor: pointer !important;
+                    margin-top: 10px;
+                }
+                </style>
+            """, unsafe_allow_html=True)
+
+            col_esq = st.container()
+            with col_esq:
+                esqueci = st.button("Esqueceu a senha?", key="forgot_btn", help="Clique para redefinir sua senha.")
+                if esqueci:
+                    st.session_state.recover_step = 1
+                    st.rerun()
 
         # === Etapa 1: Recuperação por E-mail ===
         elif st.session_state.recover_step == 1:
@@ -779,6 +833,7 @@ if st.session_state.get("logged_in", False):
                 "Validar Bets Gerada",
                 "Assinatura ",
                 "Editar Perfil",
+                "Telemetria",
                 "Usuários",
                 "Notificar",
                 "Resultados",
@@ -799,7 +854,6 @@ if st.session_state.get("logged_in", False):
                 "Sair"
             ]
         )
-
     # --- LÓGICA DE ROTEAMENTO DAS OPÇÕES ---
     if opcao_selecionada == "Painel Estatístico":
         mostrar_dashboard()
@@ -808,7 +862,6 @@ if st.session_state.get("logged_in", False):
 
         # Layout em 3 colunas
         col1, col2, col3 = st.columns(3)
-
         with col1:
             st.markdown(f"""
             <div style="border: 2px solid #f59e0b; border-radius: 12px; padding: 20px; background-color:#fff; text-align:center;">
@@ -848,7 +901,12 @@ if st.session_state.get("logged_in", False):
     elif opcao_selecionada == "Editar Perfil":
         editar_perfil()
 
-    # --- NOVAS FUNÇÕES ADMIN ---
+    # --- 🔹 NOVA FUNÇÃO: TELEMETRIA ADMIN ---
+    elif opcao_selecionada == "Telemetria":
+        from dashboard import mostrar_telemetria
+        mostrar_telemetria()
+
+    # --- NOVAS FUNÇÕES ADMIN EXISTENTES ---
     elif opcao_selecionada == "Usuários":
         from admin.usuarios import listar_usuarios
         listar_usuarios()
@@ -870,4 +928,4 @@ if st.session_state.get("logged_in", False):
 
 
 # --- FIM DO BLOCO DE LOGIN / CADASTRO ---
-    st.sidebar.markdown("<div style='text-align:left; color:green; font-size:16px;'>fAIxaBet v8.07</div>", unsafe_allow_html=True)
+    st.sidebar.markdown("<div style='text-align:left; color:green; font-size:16px;'>fAIxaBet v8.10</div>", unsafe_allow_html=True)

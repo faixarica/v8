@@ -1,24 +1,29 @@
 # ============================================================
 # ensemble.py  (FaixaBet LS16-Platinum - versão inteligente c/ Telemetria)
+# Compatível com TensorFlow 2.12–2.15 (produção segura)
 # ============================================================
+
 import os
+import sys
 import numpy as np
 import tensorflow as tf
 from datetime import datetime
 import csv
+from tensorflow.keras.models import load_model
+
+# --------------------------------------------------------------
+# 🔹 Configuração opcional de logs
+# --------------------------------------------------------------
+VERBOSE = "--verbose" in sys.argv
 
 # 🔹 Permite rodar o script isoladamente (CLI)
 if __name__ == "__main__":
-    import sys
     sys.path.append(os.path.dirname(__file__))
 
 # 🔹 Importa o sampler de forma relativa (corrigido)
 try:
-    # Quando rodar como parte do pacote (normal)
     from .sampler import gerar_palpites
 except ImportError:
-    # Quando rodar diretamente no interpretador Python na raiz
-    import sys, os
     sys.path.append(os.path.dirname(__file__))
     from sampler import gerar_palpites
 
@@ -26,11 +31,39 @@ except ImportError:
 # Utilidades
 # --------------------------------------------------------------
 def load_model_safe(path):
-    """Carrega um modelo Keras com tratamento de falhas."""
+    """
+    Carrega um modelo Keras com tratamento de compatibilidade.
+    Tenta .keras, depois .h5 e por fim SavedModel.
+    """
     try:
-        return tf.keras.models.load_model(path, compile=False)
-    except Exception as e:
-        print(f"[!] Falha ao carregar modelo: {path} → {e}")
+        model = tf.keras.models.load_model(path, compile=False)
+        print(f"✅ Modelo carregado (.keras): {os.path.basename(path)}")
+        return model
+    except Exception as e1:
+        print(f"[!] Falha ao carregar {path}: {e1}")
+
+        # fallback .h5
+        alt_h5 = path.replace(".keras", ".h5")
+        if os.path.exists(alt_h5):
+            try:
+                print(f"⚙️ Tentando fallback .h5 → {alt_h5}")
+                model = tf.keras.models.load_model(alt_h5, compile=False)
+                print(f"✅ Modelo carregado (.h5): {os.path.basename(alt_h5)}")
+                return model
+            except Exception as e2:
+                print(f"[!] Falha ao carregar fallback .h5: {e2}")
+
+        # fallback SavedModel (pasta)
+        alt_dir = path.replace(".keras", "")
+        if os.path.isdir(alt_dir):
+            try:
+                print(f"⚙️ Tentando fallback SavedModel → {alt_dir}")
+                model = tf.keras.models.load_model(alt_dir, compile=False)
+                print(f"✅ Modelo carregado (SavedModel): {os.path.basename(alt_dir)}")
+                return model
+            except Exception as e3:
+                print(f"[!] Falha ao carregar fallback SavedModel: {e3}")
+
         return None
 
 
@@ -61,6 +94,7 @@ def gerar_palpite_ensemble(base_dir=None, window=50):
     Retorna 15 dezenas mais prováveis como lista de strings.
     Também grava logs locais e telemetria no Postgres.
     """
+
     # 🔹 Caminho base automático
     if base_dir is None:
         base_dir = os.path.join(os.path.dirname(__file__), "models", "prod")
@@ -76,7 +110,9 @@ def gerar_palpite_ensemble(base_dir=None, window=50):
     np.random.seed(seed_value)
     print(f"🧬 Seed aleatória: {seed_value}")
 
+    # ----------------------------------------------------------
     # 🔹 Carrega modelos LS14/LS15 (recent/mid/global)
+    # ----------------------------------------------------------
     models = []
     for prefix in ["recent", "mid", "global"]:
         for tipo in ["ls14pp", "ls15pp"]:
@@ -85,7 +121,6 @@ def gerar_palpite_ensemble(base_dir=None, window=50):
                 m = load_model_safe(path)
                 if m:
                     models.append(m)
-                    print(f"✅ Modelo carregado: {os.path.basename(path)}")
 
     if not models:
         print("❌ Nenhum modelo encontrado em", base_dir)
@@ -95,6 +130,15 @@ def gerar_palpite_ensemble(base_dir=None, window=50):
     # 🔹 Gera entrada contextual (últimos 50 sorteios + jitter)
     # ----------------------------------------------------------
     data_path = os.path.join(os.path.dirname(__file__), "dados", "rows.npy")
+
+    if not os.path.exists(data_path):
+        print("⚠️ rows.npy não encontrado. Tentando gerar com prepare_real_data_db_v3...")
+        try:
+            from prepare_real_data_db_v3 import main as gerar_dados
+            gerar_dados()
+        except Exception as e:
+            print(f"[!] Falha ao gerar rows.npy automaticamente: {e}")
+
     if os.path.exists(data_path):
         ultimos = np.load(data_path, allow_pickle=True)
         X_base = ultimos[-window:]
@@ -129,19 +173,16 @@ def gerar_palpite_ensemble(base_dir=None, window=50):
     # ----------------------------------------------------------
     preds = predict_from_models(models, X, weights=weights)
 
-    # Evita zeros exatos
     preds = np.maximum(preds, 1e-9)
-
-    # Temperatura (já definida acima)
     p_temp = preds ** (1.0 / float(temperature))
     p_temp = p_temp / p_temp.sum()
 
     # ----------------------------------------------------------
     # 🌀 Exploração controlada (Dirichlet + ruído leve em pesos)
     # ----------------------------------------------------------
-    alpha = 0.35  # intensidade da exploração
+    alpha = 0.35
     noise = np.random.dirichlet(np.ones(25) * alpha)
-    lam = 0.18  # peso do ruído
+    lam = 0.18
     p_mix = (1.0 - lam) * p_temp + lam * noise
     p_mix = np.clip(p_mix / p_mix.sum(), 1e-9, 1.0)
     p_mix = p_mix / p_mix.sum()
@@ -156,25 +197,12 @@ def gerar_palpite_ensemble(base_dir=None, window=50):
         diversify_strength=0.88,
     )
 
-    # Seleciona o primeiro como principal (para salvar e logar)
     dezenas_principal = [f"{d:02d}" for d in palpites[0]]
-
-    # Log visual
     print("🎯 Palpite principal LS16:", dezenas_principal)
     print("📦 Total de palpites gerados:", len(palpites))
-    print(
-        "🧩 Diversidade média:",
-        np.mean(
-            [
-                len(set(a) & set(b))
-                for i, a in enumerate(palpites)
-                for b in palpites[i + 1 :]
-            ]
-        ),
-    )
 
     # ----------------------------------------------------------
-    # 💾 Salva todos os palpites no CSV (mantém compat com formato antigo)
+    # 💾 Salva todos os palpites no CSV
     # ----------------------------------------------------------
     out_dir = os.path.join(os.path.dirname(__file__), "output")
     os.makedirs(out_dir, exist_ok=True)
@@ -189,7 +217,7 @@ def gerar_palpite_ensemble(base_dir=None, window=50):
     print(f"🕒 Registro: {timestamp}")
 
     # ----------------------------------------------------------
-    # 🗄️ Telemetria no Postgres (mantida, apenas registra o principal)
+    # 🗄️ Telemetria no Postgres
     # ----------------------------------------------------------
     try:
         import psycopg2
@@ -223,9 +251,14 @@ def gerar_palpite_ensemble(base_dir=None, window=50):
             conn.close()
             print("🗄️ Telemetria salva no banco (Postgres)")
         else:
-            print("⚠️ Telemetria não gravada — variável DATABASE_URL não encontrada.")
+            print("⚠️ Telemetria não gravada — DATABASE_URL ausente.")
     except Exception as e:
         print(f"[!] Falha ao gravar telemetria: {e}")
 
     print("=============================================================")
     return palpites
+
+
+# 🔹 Execução direta (modo CLI)
+if __name__ == "__main__":
+    gerar_palpite_ensemble()

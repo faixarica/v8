@@ -1,0 +1,17 @@
+{
+  "total_sql": 3528,
+  "validos": 3528,
+  "invalidos": 0,
+  "primeiro_concurso": 1,
+  "ultimo_concurso": 3528,
+  "datas": {
+    "min": "2003-09-29",
+    "max": "2025-11-01"
+  },
+  "artefatos": [
+    "rows_struct.npy",
+    "rows.npy",
+    "rep_map.npy",
+    "winners.npy"
+  ]
+}

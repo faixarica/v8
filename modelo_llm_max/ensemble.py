@@ -10,6 +10,14 @@ import tensorflow as tf
 from datetime import datetime
 import csv
 from tensorflow.keras.models import load_model
+from functools import lru_cache
+
+@lru_cache(maxsize=1)
+def carregar_modelos():
+    modelos = []
+    for nome in ARQUIVOS_MODELOS:
+        modelos.append(load_model(os.path.join(BASE_DIR, nome)))
+    return modelos
 
 # --------------------------------------------------------------
 # 🔹 Configuração opcional de logs
@@ -113,18 +121,11 @@ def gerar_palpite_ensemble(base_dir=None, window=50):
     # ----------------------------------------------------------
     # 🔹 Carrega modelos LS14/LS15 (recent/mid/global)
     # ----------------------------------------------------------
-    models = []
-    for prefix in ["recent", "mid", "global"]:
-        for tipo in ["ls14pp", "ls15pp"]:
-            path = os.path.join(base_dir, f"{prefix}_{tipo}_final.keras")
-            if os.path.exists(path):
-                m = load_model_safe(path)
-                if m:
-                    models.append(m)
-
+    models = carregar_modelos()
     if not models:
-        print("❌ Nenhum modelo encontrado em", base_dir)
-        return []
+        print("❌ Nenhum modelo carregado (LS16).")
+    return []
+
 
     # ----------------------------------------------------------
     # 🔹 Gera entrada contextual (últimos 50 sorteios + jitter)

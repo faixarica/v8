@@ -1,4 +1,4 @@
-# main v8.10
+    # main v8.10
 # -------------------- [1] IMPORTS --------------------
 
 import os,secrets,smtplib, requests,base64
@@ -24,10 +24,29 @@ from email.mime.multipart import MIMEMultipart
 import threading
 from email_api import app as flask_app
 
-def run_flask():
-    flask_app.run(host="0.0.0.0", port=8502, debug=False, use_reloader=False)
+import threading, socket
 
-threading.Thread(target=run_flask, daemon=True).start()
+def get_free_port(default_port=8502):
+    port = default_port
+    while True:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            if s.connect_ex(('127.0.0.1', port)) != 0:
+                return port
+            port += 1
+
+def run_flask():
+    free_port = get_free_port(8502)
+    print(f"🚀 Iniciando Flask em porta livre: {free_port}")
+    flask_app.run(host="0.0.0.0", port=free_port, debug=False, use_reloader=False)
+
+# Evita criar threads duplicadas
+if "flask_thread" not in globals():
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+
+# ----------------------------------------
+# 🔹 Escolha global da Loteria
+# ----------------------------------------
 
 
 # -------------------- [2] CONFIGS --------------------
@@ -57,7 +76,6 @@ st.markdown("""
 #  "Gere seus palpites com o poder da IA.",
 #  "FaixaBet — Onde os Números Pensam.",
 #  "Inteligência. Não sorte."
-
 
 
 # -------------------- [3] DEFINIÇÃO DE FUNÇÕES --------------------
@@ -432,7 +450,6 @@ def verificar_senha(senha_digitada, senha_hash, db=None, user_id=None):
 
     return False
 
-
 # =========================================================
 # Login
 # =========================================================
@@ -460,7 +477,7 @@ if not st.session_state.get("logged_in", False):
                     <style>
                         div.stButton > button:first-child {
                             width: 100% !important;
-                            background-color: #469536 !important;
+                            background-color:   !important;
                             color: white !important;
                             font-weight: 600 !important;
                             border: none !important;
@@ -785,115 +802,95 @@ if not st.session_state.get("logged_in", False):
                 finally:
                     db.close()
 #========================== fim       
-             
+
 if 'admin' not in st.session_state:
     # Inicializa variáveis no session_state para evitar erros de atributo inexistente
     pass
 
-# LOGIN / CADASTRO 2
+# ==========================================================
+# LOGIN / CADASTRO 2 — com suporte a múltiplas loterias
+# ==========================================================
 if st.session_state.get("logged_in", False):
-    nome_usuario = st.session_state.usuario.get("nome", "Usuário")
-    st.sidebar.title(f"Bem-Vindo, {nome_usuario}")
 
+    # --- Cabeçalho lateral ---
+    usuario = st.session_state.get("usuario", {})
+    nome_usuario = usuario.get("nome", "Usuário")
+    tipo_user = usuario.get("tipo", "").upper()
+
+    st.sidebar.title(f"Bem-vindo(a), {nome_usuario}")
     st.sidebar.markdown("""
-        <div style='
-            text-align: center; 
-            padding: 8px 0; 
-            font-size: 26px; 
-            font-weight: bold; 
-            color: green;
-            border-bottom: 1px solid #DDD;
-        '>fAIxaBet®</div>
+        <div style='text-align:center; padding:8px 0; font-size:26px;
+        font-weight:bold; color:green; border-bottom:1px solid #DDD;'>
+            fAIxaBet®
+        </div>
     """, unsafe_allow_html=True)
-    
-    try:
-        print("Senha input:", senha_input)
-        print("Senha hash (tipo):", type(senha_hash))
-        print("Senha hash (conteúdo):", senha_hash)
-    except NameError as ne:
-       # print(f"[AVISO] Variável não definida: {ne}")
-       pass
-    except Exception as e:
-        print(f"[ERRO] Problema ao imprimir a senha: {e}")
 
-   
-   
-    # --- MENU PRINCIPAL COM SUPORTE AO ADMIN ---
-    tipo_user = st.session_state.usuario.get("tipo", "").upper()
+    # --- Pergunta a loteria que o usuário quer trabalhar ---
+    st.sidebar.markdown("### Escolha a Loteria")
+    loteria_escolhida = st.sidebar.selectbox(
+        "Loteria:",
+        ["Lotofácil", "Mega-Sena"],
+        index=0
+    )
+    st.session_state["loteria"] = loteria_escolhida
 
-    # Se for administrador, mostra menu especial
+    # =======================================================
+    # MENU PRINCIPAL (apenas após login válido)
+    # =======================================================
     if tipo_user in ["A", "ADM", "ADMIN"]:
         st.sidebar.markdown("### ⚙️ Painel Administrativo")
-        opcao_selecionada = st.sidebar.radio(
-            "Menu",
-            [
-                "Painel Estatístico",
-                "Gerar Novas Bets",
-                "Histórico",
-                "Validar Bets Gerada",
-                "Assinatura ",
-                "Editar Perfil",
-                "Telemetria",
-                "Usuários",
-                "Notificar",
-                "Resultados",
-                "Evolução",
-                "Sair"
-            ]
-        )
+        menu_itens = [
+            "Painel Estatístico",
+            "Gerar Novas Bets",
+            "Histórico",
+            "Validar Bets Gerada",
+            "Assinatura ",
+            "Editar Perfil",
+            "Telemetria",
+            "Usuários",
+            "Notificar",
+            "Resultados",
+            "Evolução",
+            "Sair"
+        ]
     else:
-        opcao_selecionada = st.sidebar.radio(
-            "Menu",
-            [
-                "Painel Estatístico",
-                "Gerar Novas Bets",
-                "Histórico",
-                "Validar Bets Gerada",
-                "Assinatura ",
-                "Editar Perfil",
-                "Sair"
-            ]
-        )
-    # --- LÓGICA DE ROTEAMENTO DAS OPÇÕES ---
+        menu_itens = [
+            "Painel Estatístico",
+            "Gerar Novas Bets",
+            "Histórico",
+            "Validar Bets Gerada",
+            "Assinatura ",
+            "Editar Perfil",
+            "Sair"
+        ]
+
+    opcao_selecionada = st.sidebar.radio("Menu", menu_itens)
+
+    # =======================================================
+    # ROTEAMENTO DAS OPÇÕES
+    # =======================================================
     if opcao_selecionada == "Painel Estatístico":
         mostrar_dashboard()
-        dia, semana, mes = calcular_palpites_periodo(st.session_state.usuario["id"])
+        dia, semana, mes = calcular_palpites_periodo(usuario["id"])
         st.markdown("---")
-
-        # Layout em 3 colunas
         col1, col2, col3 = st.columns(3)
-        with col1:
-            st.markdown(f"""
-            <div style="border: 2px solid #f59e0b; border-radius: 12px; padding: 20px; background-color:#fff; text-align:center;">
-                <div style="font-size:14px; color:#333;">Palpites Hoje</div>
-                <div style="font-size:24px; font-weight:bold; margin-top:5px;">{dia}</div>
-            </div>
-            """, unsafe_allow_html=True)
+        col1.metric("Palpites Hoje", dia)
+        col2.metric("Palpites na Semana", semana)
+        col3.metric("Palpites no Mês", mes)
 
-        with col2:
-            st.markdown(f"""
-            <div style="border: 2px solid #f59e0b; border-radius: 12px; padding: 20px; background-color:#fff; text-align:center;">
-                <div style="font-size:14px; color:#333;">Palpites na Semana</div>
-                <div style="font-size:24px; font-weight:bold; margin-top:5px;">{semana}</div>
-            </div>
-            """, unsafe_allow_html=True)
+    elif opcao_selecionada in ["Gerar Novas Bets", "Histórico", "Validar Bets Gerada"]:
+        # 🔸 Importa o módulo correto conforme a loteria escolhida
+        if loteria_escolhida == "Mega-Sena":
+            from mega.palpites_m import gerar_palpite_ui, historico_palpites, validar_palpite
+        else:
+            from palpites import gerar_palpite_ui, historico_palpites, validar_palpite
 
-        with col3:
-            st.markdown(f"""
-            <div style="border: 2px solid #f59e0b; border-radius: 12px; padding: 20px; background-color:#fff; text-align:center;">
-                <div style="font-size:14px; color:#333;">Palpites no Mês</div>
-                <div style="font-size:24px; font-weight:bold; margin-top:5px;">{mes}</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-    elif opcao_selecionada == "Gerar Novas Bets":
-        gerar_palpite_ui()
-
-    elif opcao_selecionada == "Histórico":
-        historico_palpites()
-
-    elif opcao_selecionada == "Validar Bets Gerada":
-        validar_palpite()
+        if opcao_selecionada == "Gerar Novas Bets":
+            gerar_palpite_ui()
+        elif opcao_selecionada == "Histórico":
+            historico_palpites()
+        elif opcao_selecionada == "Validar Bets Gerada":
+            validar_palpite()
 
     elif opcao_selecionada == "Assinatura ":
         exibir_aba_financeiro()
@@ -901,12 +898,10 @@ if st.session_state.get("logged_in", False):
     elif opcao_selecionada == "Editar Perfil":
         editar_perfil()
 
-    # --- 🔹 NOVA FUNÇÃO: TELEMETRIA ADMIN ---
     elif opcao_selecionada == "Telemetria":
         from dashboard import mostrar_telemetria
         mostrar_telemetria()
 
-    # --- NOVAS FUNÇÕES ADMIN EXISTENTES ---
     elif opcao_selecionada == "Usuários":
         from admin.usuarios import listar_usuarios
         listar_usuarios()
@@ -926,6 +921,9 @@ if st.session_state.get("logged_in", False):
     elif opcao_selecionada == "Sair":
         logout()
 
+# ==========================================================
+# Se não estiver logado, mostra apenas o formulário de login
+# ==========================================================
 
 # --- FIM DO BLOCO DE LOGIN / CADASTRO ---
-    st.sidebar.markdown("<div style='text-align:left; color:green; font-size:16px;'>fAIxaBet v8.10</div>", unsafe_allow_html=True)
+    st.sidebar.markdown("<div style='text-align:left; color:green; font-size:16px;'>fAIxaBet v8.14</div>", unsafe_allow_html=True)

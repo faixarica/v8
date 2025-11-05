@@ -362,4 +362,3 @@ def mostrar_dashboard():
                     <div class="metric-value" style="color:#10b981;">{valor if valor is not None else '-'}</div>
                 </div>
             """, unsafe_allow_html=True)
-

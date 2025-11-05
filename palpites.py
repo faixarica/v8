@@ -28,7 +28,6 @@ except Exception:
 
 # =========================
 # CONFIG LOG
-
 # =========================
 
 # --- LS16: ensemble inteligente (tenta usar modelo_llm_max/ensemble.py)
@@ -40,8 +39,7 @@ except Exception:
 DEBUG_MODE = os.environ.get("DEBUG_MODE", "0") == "1"
 logging.basicConfig(
     level=logging.DEBUG if DEBUG_MODE else logging.INFO,
-    format="%(asctime)s %(levelname)s: %(message)s",
-)
+    format="%(asctime)s %(levelname)s: %(message)s",)
 
 def _safe_rerun():
     """Rerun compatível com versões novas e antigas do Streamlit."""
@@ -82,7 +80,6 @@ def get_conn():
     except Exception as e:
         st.error(f"Erro ao conectar ao banco de dados: {e}")
         return None
-
 
 # =========================
 # FUNÇÕES AUXILIARES
@@ -527,7 +524,7 @@ def _lazy_imports():
         _tf_load_model = None
         _to_binary = None
         # Não levanta exceção — o app continua, apenas desativa recursos ML.
-        st.warning("TensorFlow não encontrado — modelos LS14/LS15 estarão desativados.")
+        #st.warning("TensorFlow não encontrado — modelos LS14/LS15 estarão desativados.")
 
 # ================================================================
 # 📁 CONFIGURAÇÃO DE DIRETÓRIOS E LOGS
@@ -539,15 +536,13 @@ except NameError:
 
 BASE_DIR = os.environ.get(
     "FAIXABET_BASE_DIR",
-    os.path.dirname(os.path.dirname(os.path.abspath(_base_file)))
-)
+    os.path.dirname(os.path.dirname(os.path.abspath(_base_file))))
 
 DEFAULT_MODELS_DIRS = [
     os.path.join(BASE_DIR, "modelo_llm_max", "models", "prod"),
     os.path.join(BASE_DIR, "modelo_llm_max", "models"),
     os.path.join(BASE_DIR, "models"),
-    os.environ.get("FAIXABET_MODELS_DIR", "")
-]
+    os.environ.get("FAIXABET_MODELS_DIR", "")]
 
 # Usa o primeiro caminho existente como diretório de modelos
 MODELS_DIR = next((p for p in DEFAULT_MODELS_DIRS if p and os.path.isdir(p)), DEFAULT_MODELS_DIRS[0])
@@ -557,8 +552,7 @@ DEBUG_MODE = os.environ.get("DEBUG_MODE", "0") == "1"
 
 logging.basicConfig(
     level=logging.DEBUG if DEBUG_MODE else logging.INFO,
-    format="%(asctime)s %(levelname)s: %(message)s"
-)
+    format="%(asctime)s %(levelname)s: %(message)s")
 
 logging.info(f"🧩 MODELS_DIR definido como: {MODELS_DIR}")
 logging.info(f"🔧 Base dir: {BASE_DIR}")
@@ -588,8 +582,7 @@ _PLAN_TO_GROUPS = {
     "free": ["recent"],
     "silver": ["recent", "mid"],
     "gold": ["recent", "mid", "global"],
-    "plano pago x": ["recent", "mid", "global"]
-}
+    "plano pago x": ["recent", "mid", "global"]}
 
 def _groups_allowed_for_plan(nome_plano):
     if not nome_plano:
@@ -609,7 +602,6 @@ def _model_name_variants(model_name):
     # sem underscore
     variants.add(m.replace("_", ""))
     return list(variants)
-
 
 def _detect_group_and_expected_from_path(p):
     """Detecta grupo (recent/mid/global) a partir do path/filename e sugere expected_seq_len."""
@@ -1127,8 +1119,7 @@ def gerar_palpite_from_probs(
     reinforce_threshold=0.06,
     boost_factor=2.0,
     temperature=1.0,
-    deterministic=False
-):
+    deterministic=False):
     """
     Gera palpites a partir de probabilidades.
     Agora com diversidade opcional (Gumbel-top-k) controlada por env USE_GUMBEL.
@@ -1159,6 +1150,7 @@ def gerar_palpite_from_probs(
     else:
         chosen_idxs = np.random.choice(np.arange(25), size=limite, replace=False, p=p)
         return np.sort(chosen_idxs + 1).tolist()
+
 # ================================================================
 # BLOCO NOVO: DIVERSIDADE — GUMBEL-TOP-K SAMPLER (OPCIONAL)
 
@@ -1335,7 +1327,6 @@ def verificar_limite_palpites(id_usuario):
         return False, "Erro", 0
     finally:
         db.close()
-
 
 def obter_limite_dezenas_por_plano(tipo_plano):
     db = Session()
@@ -2028,7 +2019,6 @@ def gerar_para_plano(nome_plano: str, qtd: int = 3, k_escolhido: int = None):
     palpites = gerar_palpites_por_modelo(modelo=modelo, qtd=qtd, k=k)
     return modelo, k, palpites
 
-
 # ================== [GENERATOR CORE] ==================
 def _amostrar_dezenas(scores_25, k=15, correl_steps=10, pares_range=(6,9)):
     usados = combinacoes_ja_sorteadas()
@@ -2099,13 +2089,13 @@ def gerar_palpites_por_modelo(modelo: str, qtd: int = 3, k: int = 15):
             palpites = _fxb_ls16_ensemble()
 
             # Exibir no Streamlit (se disponível)
-            if "st" in globals():
-                st.markdown("### 💎 Palpites LS16 (Platinum — Ensemble com Diversidade)")
-                for i, p in enumerate(palpites, 1):
-                    dezenas_txt = " ".join(f"{x:02d}" for x in p)
-                    st.markdown(f"**Palpite {i:02d}:** {dezenas_txt}")
-                st.info(f"📦 Total gerado: {len(palpites)} palpites diversificados")
-
+            #if "st" in globals():
+            #    st.markdown("### Palpites LS16 (Platinum — Ensemble com Diversidade)")
+            #    for i, p in enumerate(palpites, 1):
+            #        dezenas_txt = " ".join(f"{x:02d}" for x in p)
+            #        st.markdown(f"**Palpite {i:02d}:** {dezenas_txt}")
+            #    st.info(f"📦 Total gerado: {len(palpites)} palpites diversificados")
+            #
             return [list(map(int, p)) for p in palpites]
 
         except Exception as e:
@@ -2148,8 +2138,6 @@ def gerar_palpites_por_modelo(modelo: str, qtd: int = 3, k: int = 15):
         tent += 1
 
     return palpites
-
-
 
 # ---------- [GENERATOR] unificado por plano ----------
 #Gerador de palpites com regras por plano (Free/Silver/Gold/Platinum) 23/10/2025
@@ -2285,6 +2273,7 @@ def exibir_modal_palpites(palpites_gerados):
 
     html = f"""
 
+
 <!DOCTYPE html>
 <html>
     <head>
@@ -2381,7 +2370,7 @@ def exibir_modal_palpites(palpites_gerados):
 
 # -------------------- UI / CORE - GENERATION --------------------
 def gerar_palpite_ui():
-    st.title("Gerar Bets")
+    st.title("Gerar Bets - Lotofácil    ")
     _lazy_imports()  # importa módulos pesados sob demanda
 
     # Verifica login
@@ -2420,8 +2409,7 @@ def gerar_palpite_ui():
         Plano atual: <span style="color:#009900;">{nome_plano}</span>
     </div>
     """,
-    unsafe_allow_html=True
-)
+    unsafe_allow_html=True)
     # Verifica limite de palpites
     permitido, nome_plano_verif, palpites_restantes = verificar_limite_palpites(id_usuario)
     if not permitido:

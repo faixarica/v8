@@ -1,11 +1,9 @@
-    # main v8.10
-# -------------------- [1] IMPORTS --------------------
-
 import os,secrets,smtplib, requests,base64
 import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pds
 import hashlib
+import requests
 
 from passlib.hash import pbkdf2_sha256
 from datetime import datetime, date, timedelta
@@ -18,35 +16,11 @@ from palpites import gerar_palpite_ui, historico_palpites, validar_palpite
 from auth import logout
 from perfil import editar_perfil
 from financeiro import exibir_aba_financeiro
-
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-import threading
-from email_api import app as flask_app
 
-import threading, socket
-
-def get_free_port(default_port=8502):
-    port = default_port
-    while True:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            if s.connect_ex(('127.0.0.1', port)) != 0:
-                return port
-            port += 1
-
-def run_flask():
-    free_port = get_free_port(8502)
-    print(f"🚀 Iniciando Flask em porta livre: {free_port}")
-    flask_app.run(host="0.0.0.0", port=free_port, debug=False, use_reloader=False)
-
-# Evita criar threads duplicadas
-if "flask_thread" not in globals():
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-
-# ----------------------------------------
-# 🔹 Escolha global da Loteria
-# ----------------------------------------
+# ✅ Backend API rodando externamente (email_api.py)
+API_BASE ="https://faixabet-email-api.onrender.com"
 
 
 # -------------------- [2] CONFIGS --------------------
@@ -593,97 +567,34 @@ if not st.session_state.get("logged_in", False):
         # === Etapa 1: Recuperação por E-mail ===
         elif st.session_state.recover_step == 1:
             st.markdown("### 🔑 Recuperar Senha")
+
             with st.form("recover_form"):
                 email_rec = st.text_input("E-mail cadastrado")
-                col1, col2 = st.columns(2)
-                with col1:
-                    submitted = st.form_submit_button("Enviar link de recuperação")
-                with col2:
-                    cancel = st.form_submit_button("Voltar ao login")
-                
-                if submitted:
-                    if not email_rec:
-                        st.error("Por favor, insira um e-mail.")
-                    else:
-                        db = Session()
-                        try:
-                            result = db.execute(text("SELECT id FROM usuarios WHERE email = :email"),
-                                                {"email": email_rec})
-                            user = result.fetchone()
-                            if user:  # Verificar se usuário existe primeiro
-                                token = gerar_token_recuperacao(user[0], db)  # Gerar token aqui
-                                # TRECHO CORRIGIDO (envia o e-mail):
-                                if token:  # Verificar se token foi gerado
-                                    # ENVIAR TOKEN POR E-MAIL
-                                    if enviar_email_recuperacao(email_rec, token):
-                                        st.success("E-mail de recuperação enviado com sucesso!")
-                                        st.session_state.recover_step = 2
-                                        st.session_state.recovery_email = email_rec
-                                        st.rerun()
-                                    else:
-                                        st.error("Erro ao enviar e-mail. Contate o suporte.")
-                            else:
-                                st.error("E-mail não encontrado.")
-                        except Exception as e:
-                            st.error(f"Erro: {e}")
-                        finally:
-                            db.close()
-                
-                if cancel:
-                    st.session_state.recover_step = 0
-                    st.rerun()
 
-        # === Etapa 2: Redefinição de Senha ===
-        elif st.session_state.recover_step == 2:
-            st.markdown("### 🔒 Redefinir Senha")
-            with st.form("reset_form"):
-                st.info(f"Token enviado para: {st.session_state.get('recovery_email', '')}")
-                token_input = st.text_input("Token de recuperação")
-                nova_senha = st.text_input("Nova senha", type="password")
-                confirmar_senha = st.text_input("Confirmar nova senha", type="password")
-                col1, col2 = st.columns(2)
-                with col1:
-                    submitted = st.form_submit_button("Redefinir senha")
-                with col2:
-                    cancel = st.form_submit_button("Voltar ao login")
-                
-                if submitted:
-                    if nova_senha != confirmar_senha:
-                        st.error("As senhas não conferem.")
-                    elif not token_input:
-                        st.error("Por favor, insira o token.")
-                    else:
-                        db = Session()
-                        try:
-                            result = db.execute(text("""
-                                SELECT user_id, expira_em FROM password_resets WHERE token = :token
-                            """), {"token": token_input})
-                            row = result.fetchone()
-                            if row:
-                                user_id, expira_em = row
-                                if datetime.utcnow() > expira_em:
-                                    st.error("Token expirado.")
-                                else:
-                                    senha_hash = pbkdf2_sha256.hash(nova_senha)
-                                    db.execute(text("UPDATE usuarios SET senha = :senha WHERE id = :id"),
-                                               {"senha": senha_hash, "id": user_id})
-                                    db.execute(text("DELETE FROM password_resets WHERE user_id = :id"),
-                                               {"id": user_id})
-                                    db.commit()
-                                    st.success("Senha redefinida com sucesso!")
-                                    st.session_state.recover_step = 0  # Voltar ao login
-                                    st.rerun()
-                            else:
-                                st.error("Token inválido.")
-                        except Exception as e:
-                            db.rollback()
-                            st.error(f"Erro: {e}")
-                        finally:
-                            db.close()
-                
-                if cancel:
-                    st.session_state.recover_step = 0
-                    st.rerun()
+                col1, col2 = st.columns([1,1])
+                submitted = col1.form_submit_button("Enviar link de recuperação")
+                cancel = col2.form_submit_button("Voltar ao login")
+
+            if submitted:
+                if not email_rec:
+                    st.error("Por favor, insira um e-mail.")
+                else:
+                    import requests
+                    try:
+                        resp = requests.post(
+                            f"{API_BASE}/password/forgot",
+                            json={"email": email_rec},
+                            timeout=10
+                        )
+                        st.success("Se o e-mail existir, enviaremos um link para redefinir sua senha.")
+                        st.session_state.recover_step = 0
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao enviar solicitação: {e}")
+
+            if cancel:
+                st.session_state.recover_step = 0
+                st.rerun()
 
     elif aba == "Cadastro":
        # st.info("⚠️ Tela de cadastro ainda não implementada.")

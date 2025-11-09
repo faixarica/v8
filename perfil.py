@@ -73,7 +73,7 @@ def editar_perfil():
     # --------------------------------
     planos = carregar_planos()
 
-    st.subheader("👤 Editar Dados Pessoais")
+    st.subheader(" Editar Dados Pessoais")
 
     nome_usuario = st.text_input("Nome de Usuário", value=usuario_atual or "")
     nome = st.text_input("Nome completo", value=nome_atual or "")
@@ -92,7 +92,7 @@ def editar_perfil():
     # --------------------------------
     # Formulário de senha
     # --------------------------------
-    st.subheader("🔒 Alterar Senha")
+    st.subheader(" Alterar Senha")
     nova_senha = st.text_input("Nova Senha", type="password")
     confirmar_senha = st.text_input("Confirmar Nova Senha", type="password")
 

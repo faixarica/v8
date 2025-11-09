@@ -308,6 +308,11 @@ def gerar_palpite_aleatorio(limite=15):
 # ================================================================
 
 def salvar_palpite(palpite, modelo, extras_meta=None):
+    # ✅ Validação: LS16 nunca deve salvar palpite vazio
+    if not palpite or len(palpite) < 15:
+        _log_warn("⚠️ Palpite LS16 inválido — não será salvo no banco.")
+        return None
+
     """
     Salva palpite no banco (PostgreSQL/Neon), compatível com campo data_norm.
     Retorna o ID do palpite inserido.

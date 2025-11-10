@@ -18,12 +18,32 @@ from perfil import editar_perfil
 from financeiro import exibir_aba_financeiro
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from urllib.parse import urlparse, parse_qs
 
-# ✅ Backend API rodando externamente (email_api.py)
-API_BASE ="https://faixabet-email-api.onrender.com"
 
+
+# Força a sidebar sempre escondida enquanto não houver login
+if not st.session_state.get("logged_in", False):
+    st.set_page_config(initial_sidebar_state="collapsed")
+    hide_sidebar = """
+        <style>
+        [data-testid="stSidebar"] {display: none;}
+        </style>
+    """
+    st.markdown(hide_sidebar, unsafe_allow_html=True)
+
+# Detecta token na URL (reset de senha)
+query_params = st.query_params
+if "token" in query_params:
+    st.session_state.token_reset = query_params["token"]
+    st.session_state.recover_step = 2
+
+if "recover_step" not in st.session_state:
+   st.session_state.recover_step = 0
 
 # -------------------- [2] CONFIGS --------------------
+st.set_page_config(page_title="fAIxaBet", initial_sidebar_state="collapsed")
+st.sidebar.empty()
 
 st.set_page_config(page_title="fAIxaBet", layout="centered")
 # Cabeçalho fixo
@@ -51,6 +71,9 @@ st.markdown("""
 #  "FaixaBet — Onde os Números Pensam.",
 #  "Inteligência. Não sorte."
 
+
+# ✅ Backend API rodando externamente (email_api.py)
+API_BASE ="https://faixabet-email-api.onrender.com"
 
 # -------------------- [3] DEFINIÇÃO DE FUNÇÕES --------------------
 
@@ -330,8 +353,6 @@ def enviar_email_recuperacao(destinatario, token):
 # =========================================================
 if "show_recover_modal" not in st.session_state:
     st.session_state.show_recover_modal = False
-if "show_reset_modal" not in st.session_state:
-    st.session_state.show_reset_modal = False
     
 # =========================================================
 # Função para gerar token de recuperação
@@ -586,15 +607,55 @@ if not st.session_state.get("logged_in", False):
                             json={"email": email_rec},
                             timeout=10
                         )
-                        st.success("Se o e-mail existir, enviaremos um link para redefinir sua senha.")
                         st.session_state.recover_step = 0
+                        st.session_state.last_recover_message = True
                         st.rerun()
+
                     except Exception as e:
                         st.error(f"Erro ao enviar solicitação: {e}")
 
             if cancel:
                 st.session_state.recover_step = 0
                 st.rerun()
+        # ===================== TELA 2: DIGITAR NOVA SENHA =====================
+        elif st.session_state.get("recover_step") == 2:
+            st.markdown("### 🔒 Redefinir senha")
+
+            token = st.session_state.get("token_reset", "")
+            if not token:
+                st.error("Token inválido ou expirado.")
+                st.stop()
+
+            with st.form("reset_form"):
+                nova = st.text_input("Nova senha", type="password")
+                conf = st.text_input("Confirmar senha", type="password")
+                submit = st.form_submit_button("Salvar nova senha")
+
+            if submit:
+                if len(nova) < 6:
+                    st.error("A senha deve ter pelo menos 6 caracteres.")
+                elif nova != conf:
+                    st.error("As senhas não coincidem.")
+                else:
+                    r = requests.post(
+                        f"{API_BASE}/password/reset",
+                        json={"token": token, "new_password": nova},
+                        timeout=15
+                    )
+                    if r.ok:
+                        st.success("✅ Sua senha foi alterada! Faça login novamente.")
+                        # limpa fluxo
+                        st.session_state.recover_step = 0
+                        st.session_state.token_reset = None
+                        st.rerun()
+                    else:
+                        # opcional: mostrar erro retornado
+                        try:
+                            err = r.json().get("error", "")
+                        except Exception:
+                            err = r.text
+                    st.error(f"❌ Erro ao redefinir a senha. {err if err else 'Tente novamente.'}")
+
 
     elif aba == "Cadastro":
        # st.info("⚠️ Tela de cadastro ainda não implementada.")

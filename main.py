@@ -33,10 +33,15 @@ if not st.session_state.get("logged_in", False):
     st.markdown(hide_sidebar, unsafe_allow_html=True)
 
 # Detecta token na URL (reset de senha)
-query_params = st.query_params
+qquery_params = st.query_params
+
 if "token" in query_params:
-    st.session_state.token_reset = query_params["token"]
+    token = query_params["token"]
+    st.session_state.token_reset = token
     st.session_state.recover_step = 2
+    st.query_params.clear()  # remove o token da URL (importante)
+    st.rerun()  # força redesenho já no modo "redefinir senha"
+
 
 if "recover_step" not in st.session_state:
    st.session_state.recover_step = 0
@@ -612,7 +617,11 @@ if not st.session_state.get("logged_in", False):
                         st.rerun()
 
                     except Exception as e:
-                        st.error(f"Erro ao enviar solicitação: {e}")
+                        if "RerunData" in str(e):
+                            pass  # ignoramos erro interno normal
+                        else:
+                            st.error(f"Erro ao enviar solicitação: {e}")
+
 
             if cancel:
                 st.session_state.recover_step = 0

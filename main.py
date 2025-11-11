@@ -20,15 +20,20 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from urllib.parse import urlparse, parse_qs
 
+# -------------------- CONFIG (precisa ser o PRIMEIRO comando Streamlit) --------------------
+st.set_page_config(
+    page_title="fAIxaBet",
+    page_icon="🍀",
+    layout="centered",
+    initial_sidebar_state="collapsed"
+)
 
-# Força a sidebar sempre escondida enquanto não houver login
-if not st.session_state.get("logged_in", False):
-    hide_sidebar = """
-        <style>
-        [data-testid="stSidebar"] {display: none;}
-        </style>
-    """
-    st.markdown(hide_sidebar, unsafe_allow_html=True)
+# -------------------- CONTROLE DE SESSÃO --------------------
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+
+if "recover_step" not in st.session_state:
+    st.session_state.recover_step = 0
 
 # Detecta token na URL (reset de senha)
 query_params = st.query_params
@@ -44,23 +49,7 @@ if "token" in query_params:
 if "recover_step" not in st.session_state:
    st.session_state.recover_step = 0
 
-# -------------------- [1] IMPORTS --------------------
-import streamlit as st
-# ... seus outros imports ...
 
-
-# -------------------- [2] CONFIGS (primeiro comando Streamlit) --------------------
-st.set_page_config(
-    page_title="fAIxaBet",
-    page_icon="🍀",
-    layout="centered",
-    initial_sidebar_state="collapsed"
-)
-
-
-# -------------------- [3] ESTADO DE SESSÃO --------------------
-if "recover_step" not in st.session_state:
-    st.session_state.recover_step = 0
 
 # Cabeçalho fixo
 st.markdown("""

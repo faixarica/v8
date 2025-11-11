@@ -13,6 +13,7 @@ from db import Session
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime, date
 
+
 # -------------------- [2] CSS PERSONALIZADO --------------------
 
 def apply_custom_css():
@@ -84,62 +85,62 @@ def grafico_frequencia_palpites():
 
     return fig
 
-import streamlit as st
-import pandas as pd
-from sqlalchemy import text
-from db import Session
-
-# ==============================================================
-# 📊 Telemetria (usando conexão existente via db.Session)
-# ==============================================================
 def mostrar_telemetria():
     st.markdown("## 📊 Telemetria dos Modelos (FaixaBet AI)")
     db = Session()
 
     try:
-        # --- Gráfico 1: quantidade de palpites por modelo
-        st.markdown("### 🔢 Quantidade de palpites gerados por modelo")
-
-        query1 = text("""
-            SELECT modelo, COUNT(*) AS qtd
+        # --------------------------------------------
+        # 1) Quantidade de palpites por modelo
+        # --------------------------------------------
+        st.markdown("### 🔢 Quantidade de palpites gerados")
+        query_qtd = text("""
+            SELECT modelo, COUNT(*) AS quantidade
             FROM telemetria
             GROUP BY modelo
-            ORDER BY modelo;
+            ORDER BY quantidade DESC;
         """)
-        df = pd.read_sql(query1, db.bind)
+        df_qtd = pd.read_sql(query_qtd, db.bind)
+        st.bar_chart(df_qtd.set_index("modelo"))
 
-        if df.empty:
-            st.info("Sem dados de telemetria ainda.")
-            return
+        # --------------------------------------------
+        # 2) Desempenho médio cruzando resultados oficiais
+        # --------------------------------------------
+        st.markdown("### 🎯 Desempenho médio de acertos")
 
-        # --- Filtro interativo
-        modelo_sel = st.multiselect(
-            "Filtrar modelos:",
-            df["modelo"].unique(),
-            default=df["modelo"].tolist()
-        )
-        df = df[df["modelo"].isin(modelo_sel)]
-        st.bar_chart(df.set_index("modelo"))
+        query_perf = text("""
+            SELECT 
+                t.modelo,
+                COUNT(*) AS palpites,
+                ROUND(AVG(r.acertos), 2) AS media_acertos,
+                SUM(CASE WHEN r.acertos >= 11 THEN 1 ELSE 0 END) AS qtd_11p,
+                SUM(CASE WHEN r.acertos >= 12 THEN 1 ELSE 0 END) AS qtd_12p,
+                SUM(CASE WHEN r.acertos >= 13 THEN 1 ELSE 0 END) AS qtd_13p,
+                SUM(CASE WHEN r.acertos >= 14 THEN 1 ELSE 0 END) AS qtd_14p,
+                SUM(CASE WHEN r.acertos = 15 THEN 1 ELSE 0 END) AS qtd_15p
+            FROM telemetria t
+            JOIN resultados_oficiais r 
+                ON to_char(t.data_execucao, 'DD/MM/YYYY') = r.data
+            GROUP BY t.modelo
+            ORDER BY media_acertos DESC;
+        """)
 
-        # --- Gráfico 2: média de acertos cruzando resultados oficiais
-        st.markdown("### 🎯 Desempenho médio (acertos)")
-        query2 = text("""
-        SELECT 
-            t.modelo,
-            COUNT(*) AS palpites
-        FROM telemetria t
-        GROUP BY t.modelo
-        ORDER BY t.modelo;
-    """)
+        df_perf = pd.read_sql(query_perf, db.bind)
+        st.dataframe(df_perf)
 
-        df2 = pd.read_sql(query2, db.bind)
-        st.dataframe(df2)
+        # --------------------------------------------
+        # 3) Melhor modelo do dia
+        # --------------------------------------------
+        if not df_perf.empty:
+            best = df_perf.iloc[0]
+            st.success(f"🏆 **Melhor modelo até agora:** `{best.modelo}` — média **{best.media_acertos} acertos**")
 
     except Exception as e:
         st.error(f"Erro ao carregar telemetria: {e}")
 
     finally:
         db.close()
+
 
 def mostrar_dashboard():
     apply_custom_css()

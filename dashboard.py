@@ -85,6 +85,105 @@ def grafico_frequencia_palpites():
 
     return fig
 
+    def mostrar_telemetria():
+        st.markdown("## 📊 Telemetria dos Modelos (FaixaBet AI)")
+        db = Session()
+
+        try:
+            # --------------------------------------------
+            # 1) Quantidade de palpites por modelo
+            # --------------------------------------------
+            st.markdown("### 🔢 Quantidade de palpites gerados")
+            query_qtd = text("""
+                SELECT modelo, COUNT(*) AS quantidade
+                FROM telemetria
+                GROUP BY modelo
+                ORDER BY quantidade DESC;
+            """)
+            df_qtd = pd.read_sql(query_qtd, db.bind)
+            st.bar_chart(df_qtd.set_index("modelo"))
+
+            # --------------------------------------------
+            # 2) Desempenho médio cruzando resultados oficiais
+            # --------------------------------------------
+            st.markdown("### 🎯 Desempenho médio de acertos")
+
+            query_perf = text("""
+                SELECT 
+                    t.modelo,
+                    COUNT(*) AS palpites,
+                    ROUND(AVG(
+                        (
+                            SELECT COUNT(*)
+                            FROM unnest(string_to_array(t.numeros, ' ')) AS p(num)
+                            WHERE p.num = ANY(ARRAY[
+                                r.d1, r.d2, r.d3, r.d4, r.d5,
+                                r.d6, r.d7, r.d8, r.d9, r.d10,
+                                r.d11, r.d12, r.d13, r.d14, r.d15
+                            ]::text[])
+                        )
+                    ), 2) AS media_acertos,
+                    
+                    SUM(
+                        (
+                            SELECT COUNT(*)
+                            FROM unnest(string_to_array(t.numeros, ' ')) AS p(num)
+                            WHERE p.num = ANY(ARRAY[
+                                r.d1, r.d2, r.d3, r.d4, r.d5,
+                                r.d6, r.d7, r.d8, r.d9, r.d10,
+                                r.d11, r.d12, r.d13, r.d14, r.d15
+                            ]::text[])
+                        ) >= 13
+                    ) AS qtd_13p,
+
+                    SUM(
+                        (
+                            SELECT COUNT(*)
+                            FROM unnest(string_to_array(t.numeros, ' ')) AS p(num)
+                            WHERE p.num = ANY(ARRAY[
+                                r.d1, r.d2, r.d3, r.d4, r.d5,
+                                r.d6, r.d7, r.d8, r.d9, r.d10,
+                                r.d11, r.d12, r.d13, r.d14, r.d15
+                            ]::text[])
+                        ) >= 14
+                    ) AS qtd_14p,
+
+                    SUM(
+                        (
+                            SELECT COUNT(*)
+                            FROM unnest(string_to_array(t.numeros, ' ')) AS p(num)
+                            WHERE p.num = ANY(ARRAY[
+                                r.d1, r.d2, r.d3, r.d4, r.d5,
+                                r.d6, r.d7, r.d8, r.d9, r.d10,
+                                r.d11, r.d12, r.d13, r.d14, r.d15
+                            ]::text[])
+                        ) = 15
+                    ) AS qtd_15p
+
+                FROM telemetria t
+                JOIN resultados_oficiais r 
+                    ON to_char(t.data_execucao, 'DD/MM/YYYY') = r.data
+                GROUP BY t.modelo
+                ORDER BY media_acertos DESC;
+            """)
+
+            df_perf = pd.read_sql(query_perf, db.bind)
+            st.dataframe(df_perf)
+
+            # --------------------------------------------
+            # 3) Melhor modelo do dia
+            # --------------------------------------------
+            if not df_perf.empty:
+                best = df_perf.iloc[0]
+                st.success(f"🏆 **Melhor modelo até agora:** `{best.modelo}` — média **{best.media_acertos} acertos**")
+
+        except Exception as e:
+            st.error(f"Erro ao carregar telemetria: {e}")
+
+        finally:
+            db.close()
+
+
 def mostrar_telemetria():
     st.markdown("## 📊 Telemetria dos Modelos (FaixaBet AI)")
     db = Session()
@@ -93,7 +192,8 @@ def mostrar_telemetria():
         # --------------------------------------------
         # 1) Quantidade de palpites por modelo
         # --------------------------------------------
-        st.markdown("### 🔢 Quantidade de palpites gerados")
+        st.markdown("### 🔢 Quantidade de palpites gerados por modelo")
+
         query_qtd = text("""
             SELECT modelo, COUNT(*) AS quantidade
             FROM telemetria
@@ -101,12 +201,16 @@ def mostrar_telemetria():
             ORDER BY quantidade DESC;
         """)
         df_qtd = pd.read_sql(query_qtd, db.bind)
-        st.bar_chart(df_qtd.set_index("modelo"))
+        if not df_qtd.empty:
+            st.bar_chart(df_qtd.set_index("modelo"))
+        else:
+            st.info("Ainda não há dados de telemetria registrados.")
+            return
 
         # --------------------------------------------
-        # 2) Desempenho médio cruzando resultados oficiais
+        # 2) Performance cruzada com resultados oficiais
         # --------------------------------------------
-        st.markdown("### 🎯 Desempenho médio de acertos")
+        st.markdown("### 🎯 Desempenho médio (acertos)")
 
         query_perf = text("""
             SELECT 
@@ -115,48 +219,48 @@ def mostrar_telemetria():
                 ROUND(AVG(
                     (
                         SELECT COUNT(*)
-                        FROM unnest(string_to_array(t.numeros, ' ')) AS p(num)
-                        WHERE p.num = ANY(ARRAY[
+                        FROM unnest(t.dezenas) AS p(num)
+                        WHERE p = ANY(ARRAY[
                             r.d1, r.d2, r.d3, r.d4, r.d5,
                             r.d6, r.d7, r.d8, r.d9, r.d10,
                             r.d11, r.d12, r.d13, r.d14, r.d15
-                        ]::text[])
+                        ])
                     )
                 ), 2) AS media_acertos,
-                
+
                 SUM(
                     (
                         SELECT COUNT(*)
-                        FROM unnest(string_to_array(t.numeros, ' ')) AS p(num)
-                        WHERE p.num = ANY(ARRAY[
+                        FROM unnest(t.dezenas) AS p(num)
+                        WHERE p = ANY(ARRAY[
                             r.d1, r.d2, r.d3, r.d4, r.d5,
                             r.d6, r.d7, r.d8, r.d9, r.d10,
                             r.d11, r.d12, r.d13, r.d14, r.d15
-                        ]::text[])
+                        ])
                     ) >= 13
                 ) AS qtd_13p,
 
                 SUM(
                     (
                         SELECT COUNT(*)
-                        FROM unnest(string_to_array(t.numeros, ' ')) AS p(num)
-                        WHERE p.num = ANY(ARRAY[
+                        FROM unnest(t.dezenas) AS p(num)
+                        WHERE p = ANY(ARRAY[
                             r.d1, r.d2, r.d3, r.d4, r.d5,
                             r.d6, r.d7, r.d8, r.d9, r.d10,
                             r.d11, r.d12, r.d13, r.d14, r.d15
-                        ]::text[])
+                        ])
                     ) >= 14
                 ) AS qtd_14p,
 
                 SUM(
                     (
                         SELECT COUNT(*)
-                        FROM unnest(string_to_array(t.numeros, ' ')) AS p(num)
-                        WHERE p.num = ANY(ARRAY[
+                        FROM unnest(t.dezenas) AS p(num)
+                        WHERE p = ANY(ARRAY[
                             r.d1, r.d2, r.d3, r.d4, r.d5,
                             r.d6, r.d7, r.d8, r.d9, r.d10,
                             r.d11, r.d12, r.d13, r.d14, r.d15
-                        ]::text[])
+                        ])
                     ) = 15
                 ) AS qtd_15p
 
@@ -171,11 +275,15 @@ def mostrar_telemetria():
         st.dataframe(df_perf)
 
         # --------------------------------------------
-        # 3) Melhor modelo do dia
+        # 3) Melhor modelo atual
         # --------------------------------------------
         if not df_perf.empty:
             best = df_perf.iloc[0]
-            st.success(f"🏆 **Melhor modelo até agora:** `{best.modelo}` — média **{best.media_acertos} acertos**")
+            st.success(
+                f"🏆 Melhor modelo: **{best.modelo}** — "
+                f"🎯 Média: **{best.media_acertos} acertos** — "
+                f"🔥 ≥13 pts: {best.qtd_13p} / ≥14 pts: {best.qtd_14p} / 💎 15 pts: {best.qtd_15p}"
+            )
 
     except Exception as e:
         st.error(f"Erro ao carregar telemetria: {e}")

@@ -45,11 +45,24 @@ if "token" in query_params:
 if "recover_step" not in st.session_state:
    st.session_state.recover_step = 0
 
-# -------------------- [2] CONFIGS --------------------
-st.set_page_config(page_title="fAIxaBet", initial_sidebar_state="collapsed")
-st.sidebar.empty()
+# -------------------- [1] IMPORTS --------------------
+import streamlit as st
+# ... seus outros imports ...
 
-st.set_page_config(page_title="fAIxaBet", layout="centered")
+
+# -------------------- [2] CONFIGS (primeiro comando Streamlit) --------------------
+st.set_page_config(
+    page_title="fAIxaBet",
+    page_icon="🍀",
+    layout="centered",
+    initial_sidebar_state="collapsed"
+)
+
+
+# -------------------- [3] ESTADO DE SESSÃO --------------------
+if "recover_step" not in st.session_state:
+    st.session_state.recover_step = 0
+
 # Cabeçalho fixo
 st.markdown("""
     <div style='

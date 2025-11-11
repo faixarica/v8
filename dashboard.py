@@ -221,9 +221,9 @@ def mostrar_telemetria():
                         SELECT COUNT(*)
                         FROM unnest(t.dezenas) AS p(num)
                         WHERE p = ANY(ARRAY[
-                            r.d1, r.d2, r.d3, r.d4, r.d5,
-                            r.d6, r.d7, r.d8, r.d9, r.d10,
-                            r.d11, r.d12, r.d13, r.d14, r.d15
+                            r.n1, r.n2, r.n3, r.n4, r.n5,
+                            r.n6, r.n7, r.n8, r.n9, r.n10,
+                            r.n11, r.n12, r.n13, r.n14, r.n15
                         ])
                     )
                 ), 2) AS media_acertos,
@@ -233,9 +233,9 @@ def mostrar_telemetria():
                         SELECT COUNT(*)
                         FROM unnest(t.dezenas) AS p(num)
                         WHERE p = ANY(ARRAY[
-                            r.d1, r.d2, r.d3, r.d4, r.d5,
-                            r.d6, r.d7, r.d8, r.d9, r.d10,
-                            r.d11, r.d12, r.d13, r.d14, r.d15
+                            r.n1, r.n2, r.n3, r.n4, r.n5,
+                            r.n6, r.n7, r.n8, r.n9, r.n10,
+                            r.n11, r.n12, r.n13, r.n14, r.n15
                         ])
                     ) >= 13
                 ) AS qtd_13p,
@@ -245,9 +245,9 @@ def mostrar_telemetria():
                         SELECT COUNT(*)
                         FROM unnest(t.dezenas) AS p(num)
                         WHERE p = ANY(ARRAY[
-                            r.d1, r.d2, r.d3, r.d4, r.d5,
-                            r.d6, r.d7, r.d8, r.d9, r.d10,
-                            r.d11, r.d12, r.d13, r.d14, r.d15
+                            r.n1, r.n2, r.n3, r.n4, r.n5,
+                            r.n6, r.n7, r.n8, r.n9, r.n10,
+                            r.n11, r.n12, r.n13, r.n14, r.n15
                         ])
                     ) >= 14
                 ) AS qtd_14p,
@@ -257,9 +257,9 @@ def mostrar_telemetria():
                         SELECT COUNT(*)
                         FROM unnest(t.dezenas) AS p(num)
                         WHERE p = ANY(ARRAY[
-                            r.d1, r.d2, r.d3, r.d4, r.d5,
-                            r.d6, r.d7, r.d8, r.d9, r.d10,
-                            r.d11, r.d12, r.d13, r.d14, r.d15
+                            r.n1, r.n2, r.n3, r.n4, r.n5,
+                            r.n6, r.n7, r.n8, r.n9, r.n10,
+                            r.n11, r.n12, r.n13, r.n14, r.n15
                         ])
                     ) = 15
                 ) AS qtd_15p
@@ -270,6 +270,7 @@ def mostrar_telemetria():
             GROUP BY t.modelo
             ORDER BY media_acertos DESC;
         """)
+
 
         df_perf = pd.read_sql(query_perf, db.bind)
         st.dataframe(df_perf)

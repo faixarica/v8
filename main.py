@@ -23,7 +23,6 @@ from urllib.parse import urlparse, parse_qs
 
 # Força a sidebar sempre escondida enquanto não houver login
 if not st.session_state.get("logged_in", False):
-    st.set_page_config(initial_sidebar_state="collapsed")
     hide_sidebar = """
         <style>
         [data-testid="stSidebar"] {display: none;}
@@ -422,7 +421,6 @@ def verificar_senha(senha_digitada, senha_hash, db=None, user_id=None):
 if not st.session_state.get("logged_in", False):
 
     # Esconde sidebar enquanto não logado
-    st.set_page_config(initial_sidebar_state="collapsed")
     st.sidebar.empty()
     st.markdown("<style>[data-testid='stSidebar']{display:none}</style>", unsafe_allow_html=True)
 

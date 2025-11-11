@@ -112,12 +112,54 @@ def mostrar_telemetria():
             SELECT 
                 t.modelo,
                 COUNT(*) AS palpites,
-                ROUND(AVG(r.acertos), 2) AS media_acertos,
-                SUM(CASE WHEN r.acertos >= 11 THEN 1 ELSE 0 END) AS qtd_11p,
-                SUM(CASE WHEN r.acertos >= 12 THEN 1 ELSE 0 END) AS qtd_12p,
-                SUM(CASE WHEN r.acertos >= 13 THEN 1 ELSE 0 END) AS qtd_13p,
-                SUM(CASE WHEN r.acertos >= 14 THEN 1 ELSE 0 END) AS qtd_14p,
-                SUM(CASE WHEN r.acertos = 15 THEN 1 ELSE 0 END) AS qtd_15p
+                ROUND(AVG(
+                    (
+                        SELECT COUNT(*)
+                        FROM unnest(string_to_array(t.numeros, ' ')) AS p(num)
+                        WHERE p.num = ANY(ARRAY[
+                            r.d1, r.d2, r.d3, r.d4, r.d5,
+                            r.d6, r.d7, r.d8, r.d9, r.d10,
+                            r.d11, r.d12, r.d13, r.d14, r.d15
+                        ]::text[])
+                    )
+                ), 2) AS media_acertos,
+                
+                SUM(
+                    (
+                        SELECT COUNT(*)
+                        FROM unnest(string_to_array(t.numeros, ' ')) AS p(num)
+                        WHERE p.num = ANY(ARRAY[
+                            r.d1, r.d2, r.d3, r.d4, r.d5,
+                            r.d6, r.d7, r.d8, r.d9, r.d10,
+                            r.d11, r.d12, r.d13, r.d14, r.d15
+                        ]::text[])
+                    ) >= 13
+                ) AS qtd_13p,
+
+                SUM(
+                    (
+                        SELECT COUNT(*)
+                        FROM unnest(string_to_array(t.numeros, ' ')) AS p(num)
+                        WHERE p.num = ANY(ARRAY[
+                            r.d1, r.d2, r.d3, r.d4, r.d5,
+                            r.d6, r.d7, r.d8, r.d9, r.d10,
+                            r.d11, r.d12, r.d13, r.d14, r.d15
+                        ]::text[])
+                    ) >= 14
+                ) AS qtd_14p,
+
+                SUM(
+                    (
+                        SELECT COUNT(*)
+                        FROM unnest(string_to_array(t.numeros, ' ')) AS p(num)
+                        WHERE p.num = ANY(ARRAY[
+                            r.d1, r.d2, r.d3, r.d4, r.d5,
+                            r.d6, r.d7, r.d8, r.d9, r.d10,
+                            r.d11, r.d12, r.d13, r.d14, r.d15
+                        ]::text[])
+                    ) = 15
+                ) AS qtd_15p
+
             FROM telemetria t
             JOIN resultados_oficiais r 
                 ON to_char(t.data_execucao, 'DD/MM/YYYY') = r.data

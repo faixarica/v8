@@ -524,7 +524,7 @@ if not st.session_state.get("logged_in", False):
     # ======================== PASSO 2 → DIGITAR NOVA SENHA ========================
     elif st.session_state.recover_step == 2:
 
-        st.markdown("### 🔒 Redefinir senha")
+        st.markdown("### 🔒 Redefinir Senha")
 
         token = st.session_state.get("token_reset", "")
         if not token:
@@ -678,4 +678,4 @@ if st.session_state.get("logged_in", False):
 # ==========================================================
 
 # --- FIM DO BLOCO DE LOGIN / CADASTRO ---
-    st.sidebar.markdown("<div style='text-align:left; color:green; font-size:16px;'>fAIxaBet v8.14</div>", unsafe_allow_html=True)
+    st.sidebar.markdown("<div style='text-align:left; color:green; font-size:16px;'>fAIxaBet v8.15</div>", unsafe_allow_html=True)

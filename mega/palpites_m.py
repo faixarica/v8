@@ -199,6 +199,11 @@ def evitar_repetidos(dezenas):
 # ================================================================
 
 def salvar_palpite_m(id_usuario, dezenas_fmt, modelo):
+    # ✅ Bloqueia palpites vazios ou corrompidos
+    if not dezenas_fmt or len(str(dezenas_fmt).strip()) < 5:
+        st.warning("⚠️ Palpite inválido ou vazio. Tente novamente.")
+        return
+
     """
     Insere um novo palpite. O campo 'valido' é gerido pelo banco (default = 'N').
     """
